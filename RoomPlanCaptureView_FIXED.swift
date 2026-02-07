@@ -3,6 +3,9 @@ import RoomPlan
 import Combine
 import AVFoundation
 import Foundation
+import SceneKit
+import ModelIO
+import SceneKit.ModelIO
 
 // MARK: - Ensure unique naming to avoid conflicts
 
@@ -41,18 +44,32 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
 
     func stopSession() {
         print("🛑 stopSession called from coordinator")
-        captureView?.captureSession?.stop()
-        // Clear the reference to prevent any potential retain cycles
-        captureView = nil
+        guard let session = captureView?.captureSession else {
+            print("⚠️ No capture session to stop")
+            return
+        }
+        // RoomPlan requires stop() on main thread
+        Task { @MainActor in
+            session.stop()
+            self.captureView = nil
+        }
     }
 
     // MARK: - RoomCaptureSessionDelegate
+
+    /// Auto-complete when room looks done: 4+ walls and no new geometry for 12s
+    private let autoCompleteWallsThreshold = 4
+    private let autoCompleteStallSeconds: TimeInterval = 12
+    private var didTriggerAutoComplete = false
 
     func captureSession(_ session: RoomCaptureSession, didUpdate room: CapturedRoom) {
         let walls = room.walls.count
         let objects = room.objects.count
         print("🔄 Session didUpdate room: \(walls) walls, \(objects) objects")
         
+        Task { @MainActor in
+            captureController.updateRoomWallCount(walls)
+        }
         // Track geometry progress for "stuck" detection
         if walls != lastWallCount || objects != lastObjectCount {
             lastWallCount = walls
@@ -67,6 +84,12 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
             let stalledFor = Date().timeIntervalSince(lastProgressTime)
             if stalledFor > 5 { // Log every 5s when no progress
                 print("⏱️ No geometry progress for \(String(format: "%.1f", stalledFor))s")
+            }
+            // Auto-complete when room has enough walls and scanning has stalled
+            if !didTriggerAutoComplete, walls >= autoCompleteWallsThreshold, stalledFor >= autoCompleteStallSeconds {
+                didTriggerAutoComplete = true
+                print("✅ Auto-completing: room has \(walls) walls and no progress for \(Int(stalledFor))s")
+                stopSession()
             }
         }
         
@@ -84,9 +107,15 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
 
         guard let room = latestRoom else {
             print("❌ No captured room available for export")
+            Task { @MainActor in
+                captureController.isExporting = false
+            }
             return
         }
 
+        Task { @MainActor in
+            captureController.isExporting = true
+        }
         Task.detached { [weak self] in
             do {
                 let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -94,13 +123,25 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
                 try room.export(to: url)
                 print("✅ Room exported to: \(url)")
 
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self else { return }
-                    self.capturedRoomURL = url
-                    self.captureController.capturedURL = url
+                    self.captureController.isExporting = false
+                    self.captureController.exportCompleteFileName = url.lastPathComponent
+                    // Brief "Room saved" then go straight to "Room Scanned Successfully!" (skip Explore screen)
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 1_200_000_000) // 1.2s
+                        guard let self else { return }
+                        self.captureController.exportCompleteFileName = nil
+                        self.capturedRoomURLBinding.wrappedValue = url
+                        self.captureController.dismissAfterExport = true
+                    }
                 }
             } catch {
                 print("❌ Export failed: \(error)")
+                await MainActor.run {
+                    self?.captureController.isExporting = false
+                    self?.captureController.exportCompleteFileName = nil
+                }
             }
         }
     }
@@ -158,6 +199,152 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
 
 // MARK: - SwiftUI View
 
+// MARK: - Interactive USDZ room view (drag to rotate, pinch to zoom – full exploration)
+@available(iOS 16.0, *)
+struct RoomModelPreviewView: UIViewRepresentable {
+    let url: URL
+    
+    func makeUIView(context: Context) -> SCNView {
+        let sceneView = SCNView(frame: .zero)
+        sceneView.backgroundColor = UIColor(white: 0.08, alpha: 1)
+        sceneView.autoenablesDefaultLighting = true
+        sceneView.allowsCameraControl = true
+        sceneView.antialiasingMode = .multisampling4X
+        
+        // Load full USDZ as a scene so RoomPlan's full hierarchy (walls, floor, ceiling) is preserved
+        let container: SCNNode
+        let scene = SCNScene()
+        if let loadedScene = try? SCNScene(url: url, options: nil) {
+            container = SCNNode()
+            for child in loadedScene.rootNode.childNodes {
+                container.addChildNode(child)
+            }
+            scene.rootNode.addChildNode(container)
+        } else {
+            container = SCNNode()
+            scene.rootNode.addChildNode(container)
+            let mdlAsset = MDLAsset(url: url)
+            for i in 0..<mdlAsset.count {
+                let obj = mdlAsset.object(at: i)
+                container.addChildNode(SCNNode(mdlObject: obj))
+            }
+        }
+        
+        // Bounding box of full room: merge all nodes in hierarchy
+        var minP = SCNVector3(Float.greatestFiniteMagnitude, .greatestFiniteMagnitude, .greatestFiniteMagnitude)
+        var maxP = SCNVector3(-Float.greatestFiniteMagnitude, -.greatestFiniteMagnitude, -.greatestFiniteMagnitude)
+        func mergeBox(of node: SCNNode) {
+            let (mn, mx) = node.boundingBox
+            for (sx, sy, sz) in [(1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1), (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1)] {
+                let x = sx == 1 ? mx.x : mn.x
+                let y = sy == 1 ? mx.y : mn.y
+                let z = sz == 1 ? mx.z : mn.z
+                let world = node.convertPosition(SCNVector3(x, y, z), to: container)
+                minP.x = min(minP.x, world.x)
+                minP.y = min(minP.y, world.y)
+                minP.z = min(minP.z, world.z)
+                maxP.x = max(maxP.x, world.x)
+                maxP.y = max(maxP.y, world.y)
+                maxP.z = max(maxP.z, world.z)
+            }
+            for child in node.childNodes { mergeBox(of: child) }
+        }
+        for child in container.childNodes { mergeBox(of: child) }
+        if minP.x == Float.greatestFiniteMagnitude { minP = SCNVector3(0, 0, 0); maxP = SCNVector3(1, 1, 1) }
+        
+        let cx = (minP.x + maxP.x) * 0.5
+        let cy = (minP.y + maxP.y) * 0.5
+        let cz = (minP.z + maxP.z) * 0.5
+        let dx = maxP.x - minP.x
+        let dy = maxP.y - minP.y
+        let dz = maxP.z - minP.z
+        let extent = max(dx, dy, dz, 1.0)
+        let distance = extent * 1.6
+        
+        let cam = SCNNode()
+        cam.camera = SCNCamera()
+        cam.camera?.fieldOfView = 55
+        cam.position = SCNVector3(cx + distance * 0.5, cy + distance * 0.5, cz + distance * 0.5)
+        let lookAt = SCNLookAtConstraint(target: container)
+        lookAt.isGimbalLockEnabled = true
+        cam.constraints = [lookAt]
+        scene.rootNode.addChildNode(cam)
+        sceneView.pointOfView = cam
+        sceneView.scene = scene
+        
+        return sceneView
+    }
+    
+    func updateUIView(_ uiView: SCNView, context: Context) {}
+}
+
+// MARK: - Full-screen room review: move room to explore entire USDZ, then Confirm / Rescan
+@available(iOS 16.0, *)
+struct RoomCapturePreviewScreen: View {
+    let roomFileURL: URL
+    let onConfirm: () -> Void
+    let onRescan: () -> Void
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Explore your room")
+                .font(.headline)
+                .foregroundColor(.white)
+                .padding(.top, 20)
+            
+            Text("Drag to rotate · Pinch to zoom")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.7))
+                .padding(.top, 4)
+            
+            RoomModelPreviewView(url: roomFileURL)
+                .frame(maxWidth: .infinity)
+                .frame(maxHeight: .infinity)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+            
+            HStack(spacing: 16) {
+                Button(action: onRescan) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.counterclockwise")
+                        Text("Rescan")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .foregroundColor(Theme.Colors.darkBrown)
+                    .background(Color.white)
+                    .cornerRadius(14)
+                }
+                
+                Button(action: onConfirm) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text("Use this room")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .foregroundColor(.white)
+                    .background(
+                        LinearGradient(
+                            colors: [Theme.Colors.mediumBrown, Theme.Colors.darkBrown],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(14)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 34)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+    }
+}
+
 @available(iOS 16.0, *)
 struct RoomPlanCaptureViewFixed: View {
     @Environment(\.dismiss) var dismiss
@@ -195,8 +382,10 @@ struct RoomPlanCaptureViewFixed: View {
                 }
             }
 
-            VStack {
-                HStack(spacing: Theme.Spacing.md) {
+            if !captureController.showPreview {
+            VStack(alignment: .leading, spacing: 0) {
+                // Top row: close button top-left, instruction card top-right (so 3D preview stays visible at bottom)
+                HStack(alignment: .top, spacing: Theme.Spacing.md) {
                     Button {
                         coordinator?.stopSession()
                         captureController.stopSession()
@@ -214,114 +403,121 @@ struct RoomPlanCaptureViewFixed: View {
                         .shadow(color: .black.opacity(0.4), radius: 12, x: 0, y: 4)
                     }
 
-                    Spacer()
+                    Spacer(minLength: 0)
 
-                    Button {
-                        coordinator?.stopSession()
-                        captureController.stopSession()
-                    } label: {
-                        Text("Complete")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, Theme.Spacing.lg)
-                            .padding(.vertical, Theme.Spacing.sm)
-                            .background(
-                                Capsule()
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [Theme.Colors.mediumBrown, Theme.Colors.darkBrown],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.2), lineWidth: 1))
-                            )
-                            .shadow(color: .black.opacity(0.4), radius: 12, x: 0, y: 4)
-                    }
-                }
-                .padding(Theme.Spacing.lg)
-
-                Spacer()
-
-                VStack(spacing: Theme.Spacing.md) {
-                    // New state-based UI that responds to scanning quality
+                    // Instruction card in top-right so room preview is visible below
                     VStack(spacing: Theme.Spacing.sm) {
                         Image(systemName: captureController.scanningState.iconName)
-                            .font(.system(size: captureController.scanningState == .scanning ? 32 : 24, weight: .semibold))
+                            .font(.system(size: captureController.scanningState == .scanning ? 28 : 22, weight: .semibold))
                             .foregroundColor(captureController.scanningState.iconColor)
 
                         Text(captureController.scanningState.displayTitle)
-                            .font(.system(size: 20, weight: .bold))
+                            .font(.system(size: 17, weight: .bold))
                             .foregroundColor(.white)
                             .multilineTextAlignment(.center)
 
                         Text(captureController.scanningState.displaySubtitle)
-                            .font(.system(size: 15))
+                            .font(.system(size: 13))
                             .foregroundColor(.white.opacity(0.9))
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, Theme.Spacing.sm)
                         
-                        // Show current RoomPlan instruction if available and relevant
                         if let instruction = captureController.currentInstruction, 
                            !instruction.contains("Session may be stuck") {
                             Text("RoomPlan: \(instruction)")
-                                .font(.system(size: 13))
+                                .font(.system(size: 12))
                                 .foregroundColor(.white.opacity(0.7))
                                 .multilineTextAlignment(.center)
-                                .padding(.top, 4)
+                                .padding(.top, 2)
                         }
                         
-                        // Quality-specific action buttons
                         if captureController.scanningState == .lowQuality || captureController.scanningState == .stuck {
-                            HStack(spacing: Theme.Spacing.md) {
+                            HStack(spacing: Theme.Spacing.sm) {
                                 Button("Try Again") {
                                     captureController.markGeometryProgress()
                                 }
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(.white)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
                                 .background(Theme.Colors.mediumBrown)
-                                .cornerRadius(16)
+                                .cornerRadius(12)
                                 
                                 Button("Complete Anyway") {
                                     coordinator?.stopSession()
-                                    captureController.stopSession()
                                 }
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(.white)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
                                 .background(Color.red.opacity(0.8))
-                                .cornerRadius(16)
+                                .cornerRadius(12)
                             }
-                            .padding(.top, Theme.Spacing.sm)
+                            .padding(.top, 4)
                         }
                     }
-                        .padding(Theme.Spacing.lg)
-                        .frame(maxWidth: .infinity)
-                        .background(
-                            RoundedRectangle(cornerRadius: Theme.CornerRadius.xl)
-                                .fill(.ultraThinMaterial)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: Theme.CornerRadius.xl)
-                                        .strokeBorder(
-                                            LinearGradient(
-                                                colors: [
-                                                    captureController.scanningState.iconColor.opacity(0.3),
-                                                    captureController.scanningState.iconColor.opacity(0.1)
-                                                ],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            ),
-                                            lineWidth: 1.5
-                                        )
-                                )
-                        )
-                        .shadow(color: .black.opacity(0.5), radius: 20, x: 0, y: 8)
+                    .padding(Theme.Spacing.md)
+                    .frame(maxWidth: 260)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.CornerRadius.xl)
+                            .fill(.ultraThinMaterial)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.CornerRadius.xl)
+                                    .strokeBorder(
+                                        LinearGradient(
+                                            colors: [
+                                                captureController.scanningState.iconColor.opacity(0.3),
+                                                captureController.scanningState.iconColor.opacity(0.1)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        ),
+                                        lineWidth: 1.5
+                                    )
+                            )
+                    )
+                    .shadow(color: .black.opacity(0.5), radius: 20, x: 0, y: 8)
                 }
-                .padding(.horizontal, Theme.Spacing.lg)
-                .padding(.bottom, Theme.Spacing.xxxl)
+                .padding(Theme.Spacing.lg)
+
+                Spacer(minLength: 0)
+            }
+        }
+        }
+        .animation(.easeInOut(duration: 0.45), value: captureController.showPreview)
+        .overlay {
+            if captureController.isExporting {
+                Color.black.opacity(0.7)
+                    .ignoresSafeArea()
+                VStack(spacing: Theme.Spacing.md) {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                        .tint(.white)
+                    Text("Saving room file...")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Text("Creating USDZ")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.8))
+                }
+                .padding(Theme.Spacing.xl)
+            }
+            if let name = captureController.exportCompleteFileName {
+                Color.black.opacity(0.7)
+                    .ignoresSafeArea()
+                VStack(spacing: Theme.Spacing.md) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 56))
+                        .foregroundColor(.green)
+                    Text("Room saved")
+                        .font(.title2.bold())
+                        .foregroundColor(.white)
+                    Text(name)
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(Theme.Spacing.xl)
             }
         }
         .onAppear {
@@ -355,6 +551,12 @@ struct RoomPlanCaptureViewFixed: View {
                 dismiss()
             }
         }
+        .onChange(of: captureController.dismissAfterExport) { _, shouldDismiss in
+            if shouldDismiss {
+                captureController.dismissAfterExport = false
+                dismiss()
+            }
+        }
         .alert("Unsupported Device", isPresented: $captureController.showUnsupportedDeviceAlert) {
             Button("OK") { dismiss() }
         } message: {
@@ -374,7 +576,6 @@ struct RoomPlanCaptureViewFixed: View {
             Button("Continue Scanning") { captureController.isStuck = false }
             Button("Complete Scan") {
                 coordinator?.stopSession()
-                captureController.stopSession()
             }
         } message: {
             Text("For large rooms, try:\n• Move slowly and steadily\n• Ensure good lighting\n• Point camera at wall-floor edges\n• Get close to walls when instructed\n• Complete scan if you've covered the main areas")
@@ -436,6 +637,12 @@ final class RoomPlanCaptureController: ObservableObject {
     @Published var isStuck: Bool = false
     @Published var sessionProgress: String = "Initializing..."
     @Published var scanningState: RoomPlanScanningState = .scanning
+    @Published var isExporting: Bool = false
+    @Published var exportCompleteFileName: String?
+    @Published var showPreview: Bool = false
+    @Published var pendingPreviewURL: URL?
+    /// When true, room capture view should dismiss (skip "Explore your room" and go to Room Scanned Successfully!)
+    @Published var dismissAfterExport: Bool = false
     
     // Track session state for debugging
     @Published var hasReceivedInstructions = false
@@ -451,6 +658,8 @@ final class RoomPlanCaptureController: ObservableObject {
     private var lastProgressTime = Date()
     private var lastInstruction: String?
     private var lastInstructionChange = Date()
+    /// When 4+ walls, don't show "Try Again / Complete Anyway" (auto-complete will run)
+    private var roomWallCount: Int = 0
     
     // Thresholds for quality detection
     private let lowQualityThreshold: TimeInterval = 10  // Same instruction for 10s
@@ -503,6 +712,7 @@ final class RoomPlanCaptureController: ObservableObject {
         scanningState = .scanning
         lastProgressTime = Date()
         lastInstructionChange = Date()
+        roomWallCount = 0
         
         checkCameraPermissions { [weak self] granted in
             Task { @MainActor in
@@ -528,6 +738,8 @@ final class RoomPlanCaptureController: ObservableObject {
         isStartingSession = false
         isStuck = false
         scanningState = .scanning
+        roomWallCount = 0
+        dismissAfterExport = false
         instructionTimer?.invalidate()
         instructionTimer = nil
         progressWatchdog?.invalidate()
@@ -592,6 +804,10 @@ final class RoomPlanCaptureController: ObservableObject {
         }
     }
     
+    func updateRoomWallCount(_ count: Int) {
+        roomWallCount = count
+    }
+    
     private func startProgressWatchdog() {
         print("🐕 Starting progress watchdog")
         progressWatchdog?.invalidate()
@@ -600,8 +816,11 @@ final class RoomPlanCaptureController: ObservableObject {
         progressWatchdog = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             let geometryStalledFor = Date().timeIntervalSince(self.lastProgressTime)
+            let wallCount = self.roomWallCount
             
             Task { @MainActor in
+                // Don't show warning when room has 4+ walls — auto-complete will run; showing "Try Again" is confusing
+                if wallCount >= 4 { return }
                 if geometryStalledFor > self.stuckGeometryThreshold {
                     print("❌ No geometry progress for \(String(format: "%.1f", geometryStalledFor))s - marking as STUCK")
                     self.scanningState = .stuck

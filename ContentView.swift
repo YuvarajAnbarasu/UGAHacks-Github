@@ -5,14 +5,87 @@ import Foundation
 // MARK: - Design System
 struct DesignSystem {
     static let warmCream = Color(red: 0.98, green: 0.95, blue: 0.90)
+    static let warmCreamDeep = Color(red: 0.95, green: 0.91, blue: 0.85)
+    // Premium gradient background (replaces light tan)
+    static let gradientDark = Color(red: 0x3A/255, green: 0x1F/255, blue: 0x12/255)   // #3A1F12
+    static let gradientMid = Color(red: 0x6B/255, green: 0x3F/255, blue: 0x24/255)   // #6B3F24
+    static let gradientLight = Color(red: 0xB0/255, green: 0x7A/255, blue: 0x4F/255) // #B07A4F
+    static let sand = Color(red: 0xF3/255, green: 0xE4/255, blue: 0xD3/255)           // #F3E4D3
+    static let caramel = Color(red: 0xD6/255, green: 0xB1/255, blue: 0x8A/255)      // #D6B18A
     static let darkBrown = Color(red: 0.3, green: 0.25, blue: 0.20)
     static let mediumBrown = Color(red: 0.5, green: 0.4, blue: 0.3)
     static let lightBrown = Color(red: 0.7, green: 0.6, blue: 0.45)
     static let softBrown = Color(red: 0.85, green: 0.75, blue: 0.65)
-    static let textDark = Color(red: 0.2, green: 0.15, blue: 0.12)
-    static let textMedium = Color(red: 0.4, green: 0.35, blue: 0.3)
-    static let cardBackground = Color.white
+    /// Tan, lighter text (card titles, labels)
+    static let textDark = Color(red: 0x6B/255, green: 0x4A/255, blue: 0x32/255)
+    /// Lighter tan (descriptions, secondary text)
+    static let textMedium = Color(red: 0x8B/255, green: 0x6A/255, blue: 0x52/255)
+    /// Tan card background (replaces white boxes)
+    static let cardBackground = Color(red: 0xF5/255, green: 0xEB/255, blue: 0xDE/255)
     static let shadowColor = Color.black.opacity(0.08)
+    static let shadowWarm = Color(red: 0.35, green: 0.28, blue: 0.22).opacity(0.12)
+    
+    /// 160deg gradient: #3A1F12 → #6B3F24 → #B07A4F (premium fintech-style background)
+    static var appBackgroundGradient: LinearGradient {
+        LinearGradient(
+            colors: [gradientDark, gradientMid, gradientLight],
+            startPoint: UnitPoint(x: 0.2, y: 0),
+            endPoint: UnitPoint(x: 0.9, y: 1.0)
+        )
+    }
+}
+
+// MARK: - Grain overlay for premium look (2–4% black, overlay blend)
+// Disabled in Xcode Previews to avoid Canvas overload crash.
+struct GrainOverlayView: View {
+    var opacity: Double = 0.03
+    var blendMode: BlendMode = .overlay
+    
+    private var isPreview: Bool {
+        ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PLAYGROUNDS"] == "1"
+    }
+    
+    var body: some View {
+        GeometryReader { geo in
+            if isPreview {
+                Color.clear
+            } else {
+                Canvas { context, size in
+                    let w = min(Int(size.width), 400)
+                    let h = min(Int(size.height), 600)
+                    let dotSpacing = 4
+                    for x in stride(from: 0, to: w, by: dotSpacing) {
+                        for y in stride(from: 0, to: h, by: dotSpacing) {
+                            let seed = UInt32(x &* 73856093 ^ y &* 19349663)
+                            let alpha = Double((seed % 100)) / 100.0 * opacity
+                            context.fill(
+                                Path(ellipseIn: CGRect(x: Double(x), y: Double(y), width: 1.5, height: 1.5)),
+                                with: .color(.black.opacity(alpha))
+                            )
+                        }
+                    }
+                }
+                .blendMode(blendMode)
+                .allowsHitTesting(false)
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
+// MARK: - App background (gradient + optional grain)
+struct AppBackgroundView: View {
+    var withGrain: Bool = true
+    
+    var body: some View {
+        ZStack {
+            DesignSystem.appBackgroundGradient
+                .ignoresSafeArea()
+            if withGrain {
+                GrainOverlayView(opacity: 0.03, blendMode: .overlay)
+            }
+        }
+    }
 }
 
 struct ContentView: View {
@@ -20,8 +93,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            DesignSystem.warmCream
-                .ignoresSafeArea()
+            AppBackgroundView(withGrain: true)
             
             TabView(selection: $selectedTab) {
                 HomeView(selectedTab: $selectedTab)
@@ -54,8 +126,8 @@ struct ContentView: View {
         appearance.configureWithOpaqueBackground()
         appearance.backgroundColor = UIColor.white
         
-        appearance.stackedLayoutAppearance.selected.iconColor = UIColor(DesignSystem.darkBrown)
-        appearance.stackedLayoutAppearance.selected.titleTextAttributes = [.foregroundColor: UIColor(DesignSystem.darkBrown)]
+        appearance.stackedLayoutAppearance.selected.iconColor = UIColor(DesignSystem.textDark)
+        appearance.stackedLayoutAppearance.selected.titleTextAttributes = [.foregroundColor: UIColor(DesignSystem.textDark)]
         appearance.stackedLayoutAppearance.normal.iconColor = UIColor(DesignSystem.textMedium)
         appearance.stackedLayoutAppearance.normal.titleTextAttributes = [.foregroundColor: UIColor(DesignSystem.textMedium)]
         
@@ -77,16 +149,16 @@ struct HomeView: View {
         GeometryReader { geometry in
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 32) {
-                    // Header with App Name and Notification
+                    // Header with App Name and Notification (light text on gradient)
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Furnisher")
+                            Text("Decor")
                                 .font(.system(size: 34, weight: .bold, design: .rounded))
-                                .foregroundColor(DesignSystem.darkBrown)
+                                .foregroundColor(DesignSystem.sand)
                             
                             Text("Transform your space with AR")
                                 .font(.subheadline)
-                                .foregroundColor(DesignSystem.textMedium)
+                                .foregroundColor(DesignSystem.sand.opacity(0.9))
                         }
                         
                         Spacer()
@@ -94,7 +166,7 @@ struct HomeView: View {
                         Button(action: {}) {
                             Image(systemName: "bell.fill")
                                 .font(.title2)
-                                .foregroundColor(DesignSystem.darkBrown)
+                                .foregroundColor(DesignSystem.textDark)
                                 .frame(width: 48, height: 48)
                                 .background(DesignSystem.cardBackground)
                                 .clipShape(Circle())
@@ -136,7 +208,7 @@ struct HomeView: View {
                                         Image(systemName: "arrow.right")
                                             .font(.caption)
                                     }
-                                    .foregroundColor(DesignSystem.darkBrown)
+                                    .foregroundColor(DesignSystem.textDark)
                                     .padding(.horizontal, 16)
                                     .padding(.vertical, 8)
                                     .background(DesignSystem.darkBrown.opacity(0.08))
@@ -162,13 +234,13 @@ struct HomeView: View {
                             Text("Your Wishlist")
                                 .font(.title2)
                                 .fontWeight(.bold)
-                                .foregroundColor(DesignSystem.textDark)
+                                .foregroundColor(DesignSystem.sand)
                             
                             Spacer()
                             
                             Image(systemName: "heart.fill")
                                 .font(.title3)
-                                .foregroundColor(DesignSystem.mediumBrown)
+                                .foregroundColor(DesignSystem.textMedium)
                         }
                         .padding(.horizontal, 24)
                         
@@ -202,7 +274,8 @@ struct HomeView: View {
                         .frame(height: 120)
                 }
             }
-            .background(DesignSystem.warmCream)
+            .scrollDisabled(true)
+            .background(AppBackgroundView(withGrain: true))
             .navigationBarHidden(true)
             .onAppear {
                 resultsVM.loadDesigns()
@@ -275,7 +348,7 @@ struct PromotionBannerCard: View {
                     Text("Today Only")
                         .font(.caption)
                         .fontWeight(.medium)
-                        .foregroundColor(DesignSystem.darkBrown)
+                        .foregroundColor(DesignSystem.textDark)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(DesignSystem.darkBrown.opacity(0.1))
@@ -367,7 +440,7 @@ struct RecentDesignCard: View {
             HStack {
                 Image(systemName: "cube.box.fill")
                     .font(.title2)
-                    .foregroundColor(DesignSystem.darkBrown)
+                    .foregroundColor(DesignSystem.textDark)
                     .frame(width: 40, height: 40)
                     .background(DesignSystem.darkBrown.opacity(0.1))
                     .cornerRadius(10)
@@ -388,7 +461,7 @@ struct RecentDesignCard: View {
                 Text("$\(Int(design.totalCost))")
                     .font(.title2)
                     .fontWeight(.bold)
-                    .foregroundColor(DesignSystem.mediumBrown)
+                    .foregroundColor(DesignSystem.textMedium)
                 
                 if isLarge {
                     Text("Tap to view in AR")
@@ -605,7 +678,7 @@ struct InfoCard: View {
         HStack(spacing: 16) {
             Image(systemName: icon)
                 .font(.title2)
-                .foregroundColor(DesignSystem.darkBrown)
+                .foregroundColor(DesignSystem.textDark)
                 .frame(width: 50, height: 50)
                 .background(DesignSystem.darkBrown.opacity(0.1))
                 .cornerRadius(16)
@@ -669,7 +742,7 @@ struct ModernEmptyGalleryCard: View {
         VStack(spacing: 24) {
             Image(systemName: "cube.box.fill")
                 .font(.system(size: 60))
-                .foregroundColor(DesignSystem.darkBrown)
+                .foregroundColor(DesignSystem.textDark)
                 .frame(width: 100, height: 100)
                 .background(DesignSystem.darkBrown.opacity(0.1))
                 .cornerRadius(30)
@@ -722,7 +795,7 @@ struct ModernGalleryCard: View {
                 Text("$\(Int(design.totalCost))")
                     .font(.title3)
                     .fontWeight(.semibold)
-                    .foregroundColor(DesignSystem.mediumBrown)
+                    .foregroundColor(DesignSystem.textMedium)
                 
                 Text("Tap to view in AR")
                     .font(.caption)
@@ -754,7 +827,7 @@ struct ModernDesignSummaryCard: View {
                 Spacer()
                 
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(DesignSystem.darkBrown)
+                    .foregroundColor(DesignSystem.textDark)
                     .font(.title2)
             }
             
@@ -773,7 +846,7 @@ struct ModernDesignSummaryCard: View {
                     Text("$\(totalCost)")
                         .font(.title)
                         .fontWeight(.bold)
-                        .foregroundColor(DesignSystem.mediumBrown)
+                        .foregroundColor(DesignSystem.textMedium)
                     Text("Total Cost")
                         .font(.subheadline)
                         .foregroundColor(DesignSystem.textMedium)
@@ -818,7 +891,7 @@ struct ModernFurnitureItemCard: View {
                 Text("$\(Int(item.price))")
                     .font(.title3)
                     .fontWeight(.semibold)
-                    .foregroundColor(DesignSystem.mediumBrown)
+                    .foregroundColor(DesignSystem.textMedium)
             }
             
             Spacer()
@@ -921,7 +994,7 @@ struct FurnishedResultView: View {
                     Spacer(minLength: 100)
                 }
             }
-            .background(DesignSystem.warmCream)
+            .background(AppBackgroundView(withGrain: true))
             .navigationBarHidden(true)
         }
     }
@@ -933,29 +1006,33 @@ struct ScanView: View {
     @State private var capturedRoomURL: URL?
     @ObservedObject private var furnishVM = FurnishViewModel()
     @State private var showResult = false
+    @State private var serverURLText: String = ""
+    @State private var contentAppeared = false
 
     var body: some View {
         NavigationView {
             GeometryReader { geometry in
                 VStack(spacing: 0) {
-                    // Header
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Furnisher")
-                                .font(.system(size: 32, weight: .bold, design: .rounded))
-                                .foregroundColor(DesignSystem.darkBrown)
+                    // Header (hidden on Room Scanned Successfully screen)
+                    if capturedRoomURL == nil {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Decor")
+                                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                                    .foregroundColor(DesignSystem.sand)
+                                
+                                Text("3D Room Scanner")
+                                    .font(.subheadline)
+                                    .foregroundColor(DesignSystem.sand.opacity(0.9))
+                            }
                             
-                            Text("3D Room Scanner")
-                                .font(.subheadline)
-                                .foregroundColor(DesignSystem.textMedium)
+                            Spacer()
                         }
+                        .padding(.horizontal, 24)
+                        .padding(.top, geometry.safeAreaInsets.top)
                         
                         Spacer()
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.top, geometry.safeAreaInsets.top)
-                    
-                    Spacer()
                     
                     // Main Content
                     VStack(spacing: 32) {
@@ -971,55 +1048,151 @@ struct ScanView: View {
                             .frame(width: 160, height: 160)
                             .background(
                                 LinearGradient(
-                                    colors: [DesignSystem.darkBrown, DesignSystem.mediumBrown],
+                                    colors: [DesignSystem.gradientMid, DesignSystem.gradientLight, DesignSystem.caramel],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
                                 )
                             )
                             .clipShape(Circle())
-                            .shadow(color: DesignSystem.darkBrown.opacity(0.4), radius: 20, x: 0, y: 12)
+                            .overlay(
+                                Circle()
+                                    .strokeBorder(DesignSystem.sand.opacity(0.4), lineWidth: 1)
+                            )
+                            .shadow(color: DesignSystem.shadowWarm, radius: 16, x: 0, y: 8)
+                            .shadow(color: DesignSystem.darkBrown.opacity(0.25), radius: 24, x: 0, y: 12)
                         }
-                        .scaleEffect(capturedRoomURL != nil ? 0.9 : 1.0)
-                        .animation(.spring(response: 0.6, dampingFraction: 0.8), value: capturedRoomURL != nil)
+                        .scaleEffect(capturedRoomURL != nil ? 0.9 : (contentAppeared ? 1.0 : 0.92))
+                        .opacity(contentAppeared ? 1 : 0.96)
+                        .animation(.spring(response: 0.55, dampingFraction: 0.78), value: capturedRoomURL != nil)
+                        .animation(.spring(response: 0.6, dampingFraction: 0.8), value: contentAppeared)
                         
                         // Instruction Text
                         VStack(spacing: 12) {
                             if capturedRoomURL == nil {
-                                Text("Ready to Scan")
-                                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                                    .foregroundColor(DesignSystem.textDark)
+                                VStack(spacing: 12) {
+                                    Text("Ready to Scan")
+                                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                                        .foregroundColor(DesignSystem.sand)
+                                    
+                                    Text("Tap the scanner to capture your room in 3D")
+                                        .font(.subheadline)
+                                        .foregroundColor(DesignSystem.sand.opacity(0.9))
+                                        .multilineTextAlignment(.center)
+                                }
+                                .opacity(contentAppeared ? 1 : 0)
+                                .offset(y: contentAppeared ? 0 : 6)
+                                .animation(.easeOut(duration: 0.4).delay(0.08), value: contentAppeared)
                                 
-                                Text("Tap the scanner to capture your room in 3D")
-                                    .font(.subheadline)
-                                    .foregroundColor(DesignSystem.textMedium)
-                                    .multilineTextAlignment(.center)
-                                
-                                // Feature hints closer to main content
+                                // Feature hints – soft pills
                                 VStack(spacing: 16) {
-                                    HStack(spacing: 24) {
+                                    HStack(spacing: 20) {
                                         FeatureHint(icon: "cube.transparent", text: "3D Capture")
                                         FeatureHint(icon: "brain.head.profile", text: "AI Design")
                                         FeatureHint(icon: "arkit", text: "AR Preview")
                                     }
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 16)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 20)
+                                            .fill(DesignSystem.cardBackground)
+                                            .shadow(color: DesignSystem.shadowColor, radius: 10, x: 0, y: 4)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 20)
+                                            .strokeBorder(DesignSystem.softBrown.opacity(0.25), lineWidth: 1)
+                                    )
                                 }
                                 .padding(.top, 24)
+                                .opacity(contentAppeared ? 1 : 0)
+                                .offset(y: contentAppeared ? 0 : 8)
+                                .animation(.easeOut(duration: 0.4).delay(0.15), value: contentAppeared)
                                 
                             } else {
-                                VStack(spacing: 16) {
+                                VStack(spacing: 20) {
+                                    // Visual cue: file created
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "doc.fill")
+                                            .font(.title2)
+                                            .foregroundColor(DesignSystem.textDark)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("Room file created")
+                                                .font(.subheadline)
+                                                .fontWeight(.semibold)
+                                                .foregroundColor(DesignSystem.textDark)
+                                            Text(capturedRoomURL?.lastPathComponent ?? "room.usdz")
+                                                .font(.caption)
+                                                .foregroundColor(DesignSystem.textMedium)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.green)
+                                            .font(.title3)
+                                    }
+                                    .padding(18)
+                                    .background(DesignSystem.cardBackground)
+                                    .cornerRadius(20)
+                                    .shadow(color: DesignSystem.shadowWarm, radius: 12, x: 0, y: 5)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 20)
+                                            .strokeBorder(DesignSystem.softBrown.opacity(0.2), lineWidth: 1)
+                                    )
+                                    
+                                    // Send to server section
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        Text("Send to server")
+                                            .font(.headline)
+                                            .fontWeight(.semibold)
+                                            .foregroundColor(DesignSystem.textDark)
+                                        TextField("Server URL", text: $serverURLText)
+                                            .textFieldStyle(.plain)
+                                            .foregroundColor(DesignSystem.textDark)
+                                            .padding(12)
+                                            .background(DesignSystem.cardBackground)
+                                            .cornerRadius(12)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 12)
+                                                    .strokeBorder(DesignSystem.mediumBrown.opacity(0.35), lineWidth: 1)
+                                            )
+                                            .autocapitalization(.none)
+                                            .keyboardType(.URL)
+                                        Button(action: {}) {
+                                            HStack(spacing: 8) {
+                                                Image(systemName: "arrow.up.circle.fill")
+                                                Text("Send room file (USDZ)")
+                                                    .fontWeight(.medium)
+                                            }
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 12)
+                                            .foregroundColor(.white)
+                                            .background(
+                                                LinearGradient(
+                                                    colors: [DesignSystem.darkBrown, DesignSystem.mediumBrown],
+                                                    startPoint: .leading,
+                                                    endPoint: .trailing
+                                                )
+                                            )
+                                            .cornerRadius(14)
+                                        }
+                                    }
+                                    .padding(18)
+                                    .background(DesignSystem.cardBackground)
+                                    .cornerRadius(20)
+                                    .shadow(color: DesignSystem.shadowWarm, radius: 12, x: 0, y: 5)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 20)
+                                            .strokeBorder(DesignSystem.softBrown.opacity(0.2), lineWidth: 1)
+                                    )
+                                    
                                     Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 32))
-                                        .foregroundColor(.green)
+                                        .font(.system(size: 36))
+                                        .foregroundColor(Color(red: 0.35, green: 0.7, blue: 0.4))
                                     
                                     Text("Room Scanned Successfully!")
                                         .font(.system(size: 20, weight: .bold, design: .rounded))
                                         .foregroundColor(DesignSystem.textDark)
                                     
-                                    Text("Your 3D room model is ready for design generation")
-                                        .font(.subheadline)
-                                        .foregroundColor(DesignSystem.textMedium)
-                                        .multilineTextAlignment(.center)
-                                    
-                                    // Generate design button
                                     Button(action: {
                                         if let roomURL = capturedRoomURL {
                                             Task {
@@ -1046,26 +1219,41 @@ struct ScanView: View {
                                         .padding(.vertical, 16)
                                         .background(
                                             LinearGradient(
-                                                colors: [DesignSystem.mediumBrown, DesignSystem.lightBrown],
+                                                colors: [DesignSystem.mediumBrown, DesignSystem.lightBrown, DesignSystem.caramel.opacity(0.95)],
                                                 startPoint: .leading,
                                                 endPoint: .trailing
                                             )
                                         )
                                         .cornerRadius(28)
-                                        .shadow(color: DesignSystem.mediumBrown.opacity(0.4), radius: 12, x: 0, y: 8)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 28)
+                                                .strokeBorder(DesignSystem.softBrown.opacity(0.4), lineWidth: 1)
+                                        )
+                                        .shadow(color: DesignSystem.shadowWarm, radius: 14, x: 0, y: 6)
+                                        .shadow(color: DesignSystem.mediumBrown.opacity(0.3), radius: 16, x: 0, y: 8)
                                     }
+                                    .buttonStyle(.plain)
                                 }
                             }
                         }
                         .padding(.horizontal, 32)
+                        .padding(.top, capturedRoomURL != nil ? 28 : 0)
                     }
                     
                     Spacer()
                     Spacer()
                 }
             }
-            .background(DesignSystem.warmCream)
+            .background(AppBackgroundView(withGrain: true))
             .navigationBarHidden(true)
+            .onAppear {
+                guard !contentAppeared else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    withAnimation(.easeOut(duration: 0.35)) {
+                        contentAppeared = true
+                    }
+                }
+            }
         }
         .fullScreenCover(isPresented: $showRoomScanner) {
             if #available(iOS 16.0, *) {
@@ -1107,7 +1295,7 @@ struct FeatureHint: View {
         VStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.title3)
-                .foregroundColor(DesignSystem.mediumBrown)
+                .foregroundColor(DesignSystem.textMedium)
                 .frame(width: 32, height: 32)
             
             Text(text)
@@ -1118,27 +1306,136 @@ struct FeatureHint: View {
     }
 }
 
-// MARK: - Results View
+// MARK: - Furniture list item (from room designs)
+struct FurnitureListRowView: View {
+    let item: FurnitureItem
+    let designDate: Date?
+
+    private var formattedPrice: String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        formatter.maximumFractionDigits = 0
+        formatter.minimumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: item.price)) ?? "$\(Int(item.price))"
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            // Thumbnail or placeholder
+            Group {
+                if let url = URL(string: item.imageUrl), !item.imageUrl.isEmpty {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().aspectRatio(contentMode: .fill)
+                        case .failure, .empty:
+                            Image(systemName: "chair.lounge.fill")
+                                .font(.title2)
+                                .foregroundColor(DesignSystem.textMedium)
+                        @unknown default:
+                            Image(systemName: "chair.lounge.fill")
+                                .font(.title2)
+                                .foregroundColor(DesignSystem.textMedium)
+                        }
+                    }
+                } else {
+                    Image(systemName: "chair.lounge.fill")
+                        .font(.title2)
+                        .foregroundColor(DesignSystem.textMedium)
+                }
+            }
+            .frame(width: 56, height: 56)
+            .background(DesignSystem.softBrown.opacity(0.3))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.name)
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.textDark)
+                    .lineLimit(2)
+                if let date = designDate {
+                    Text("From design \(date.formatted(.dateTime.month(.abbreviated).day().year()))")
+                        .font(.caption)
+                        .foregroundColor(DesignSystem.textMedium)
+                }
+                Text(formattedPrice)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.textMedium)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let url = URL(string: item.url), !item.url.isEmpty {
+                Link(destination: url) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.up.right.square.fill")
+                            .font(.title3)
+                        Text("Buy")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        LinearGradient(
+                            colors: [DesignSystem.darkBrown, DesignSystem.mediumBrown],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(12)
+                }
+            }
+        }
+        .padding(16)
+        .background(DesignSystem.cardBackground)
+        .cornerRadius(16)
+        .shadow(color: DesignSystem.shadowColor, radius: 8, x: 0, y: 4)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(DesignSystem.softBrown.opacity(0.2), lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Results View (Furniture list from designs)
 struct ResultsView: View {
     @ObservedObject private var resultsVM = ResultsViewModel()
     @State private var selectedDesign: GeneratedDesign?
+
+    /// All furniture from all designs, with design date for context
+    private var furnitureWithSource: [(item: FurnitureItem, design: GeneratedDesign)] {
+        resultsVM.designs.flatMap { design in
+            design.furniture.map { (item: $0, design: design) }
+        }
+    }
 
     var body: some View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 24) {
-                    // Header
+                    // Header (light text on gradient)
                     HStack {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("AR Design Gallery")
+                            Text("Your Furniture")
                                 .font(.largeTitle)
                                 .fontWeight(.bold)
-                                .foregroundColor(DesignSystem.textDark)
+                                .foregroundColor(DesignSystem.sand)
                             
-                            Text("\(resultsVM.designs.count) designs created")
-                                .font(.title3)
-                                .fontWeight(.medium)
-                                .foregroundColor(DesignSystem.textMedium)
+                            if furnitureWithSource.isEmpty {
+                                Text(resultsVM.designs.isEmpty ? "currently, you have no furniture added. " : "No furniture in designs yet")
+                                    .font(.title3)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(DesignSystem.sand.opacity(0.85))
+                            } else {
+                                Text("\(furnitureWithSource.count) item\(furnitureWithSource.count == 1 ? "" : "s") from \(resultsVM.designs.count) design\(resultsVM.designs.count == 1 ? "" : "s")")
+                                    .font(.title3)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(DesignSystem.sand.opacity(0.85))
+                            }
                         }
                         
                         Spacer()
@@ -1159,18 +1456,39 @@ struct ResultsView: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 20)
 
-                    if resultsVM.designs.isEmpty {
-                        ModernEmptyGalleryCard()
-                            .padding(.horizontal, 20)
+                    if furnitureWithSource.isEmpty {
+                        VStack(spacing: 24) {
+                            Image(systemName: "chair.lounge.fill")
+                                .font(.system(size: 56))
+                                .foregroundColor(DesignSystem.textDark)
+                                .frame(width: 100, height: 100)
+                                .background(DesignSystem.darkBrown.opacity(0.1))
+                                .cornerRadius(30)
+                            
+                            VStack(spacing: 12) {
+                                Text("No furniture yet")
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(DesignSystem.textDark)
+                                
+                                Text("Generate a design from a scanned room to see items, cost, and links to purchase online.")
+                                    .font(.subheadline)
+                                    .foregroundColor(DesignSystem.textMedium)
+                                    .multilineTextAlignment(.center)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(40)
+                        .background(DesignSystem.cardBackground)
+                        .cornerRadius(24)
+                        .shadow(color: DesignSystem.shadowColor, radius: 12, x: 0, y: 6)
+                        .padding(.horizontal, 20)
                     } else {
-                        LazyVGrid(columns: [
-                            GridItem(.flexible(), spacing: 12),
-                            GridItem(.flexible(), spacing: 12)
-                        ], spacing: 16) {
-                            ForEach(resultsVM.designs) { (design: GeneratedDesign) in
-                                ModernGalleryCard(design: design)
+                        VStack(spacing: 12) {
+                            ForEach(Array(furnitureWithSource.enumerated()), id: \.offset) { _, pair in
+                                FurnitureListRowView(item: pair.item, designDate: pair.design.timestamp)
                                     .onTapGesture {
-                                        selectedDesign = design
+                                        selectedDesign = pair.design
                                     }
                             }
                         }
@@ -1180,7 +1498,7 @@ struct ResultsView: View {
                     Spacer(minLength: 100)
                 }
             }
-            .background(DesignSystem.warmCream)
+            .background(AppBackgroundView(withGrain: true))
             .navigationBarHidden(true)
             .fullScreenCover(item: $selectedDesign) { design in
                 ARDesignView(design: design)
