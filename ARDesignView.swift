@@ -4,7 +4,7 @@ struct ARDesignView: View {
     let design: GeneratedDesign
     @Environment(\.dismiss) var dismiss
     @State private var showFurnitureList = false
-    @StateObject private var resourceManager = RealityResourceManager.shared
+    @ObservedObject private var resourceManager = RealityResourceManager.shared
 
     var body: some View {
         ZStack {
@@ -161,8 +161,10 @@ struct ARDesignView: View {
         .sheet(isPresented: $showFurnitureList) {
             FurnitureListView(furniture: design.furniture)
         }
+        .onAppear {
+            _ = resourceManager.requestSession(.arDesign)
+        }
         .onDisappear {
-            // Release AR resources when view disappears
             resourceManager.releaseSession(.arDesign)
         }
     }

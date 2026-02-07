@@ -56,7 +56,8 @@ struct GrainOverlayView: View {
                     let dotSpacing = 4
                     for x in stride(from: 0, to: w, by: dotSpacing) {
                         for y in stride(from: 0, to: h, by: dotSpacing) {
-                            let seed = UInt32(x &* 73856093 ^ y &* 19349663)
+                            let raw = x &* 73856093 ^ y &* 19349663
+                            let seed = UInt32(truncatingIfNeeded: raw)
                             let alpha = Double((seed % 100)) / 100.0 * opacity
                             context.fill(
                                 Path(ellipseIn: CGRect(x: Double(x), y: Double(y), width: 1.5, height: 1.5)),
@@ -126,10 +127,10 @@ struct ContentView: View {
         appearance.configureWithOpaqueBackground()
         appearance.backgroundColor = UIColor.white
         
-        appearance.stackedLayoutAppearance.selected.iconColor = UIColor(DesignSystem.textDark)
-        appearance.stackedLayoutAppearance.selected.titleTextAttributes = [.foregroundColor: UIColor(DesignSystem.textDark)]
-        appearance.stackedLayoutAppearance.normal.iconColor = UIColor(DesignSystem.textMedium)
-        appearance.stackedLayoutAppearance.normal.titleTextAttributes = [.foregroundColor: UIColor(DesignSystem.textMedium)]
+        appearance.stackedLayoutAppearance.selected.iconColor = UIColor(DesignSystem.caramel)
+        appearance.stackedLayoutAppearance.selected.titleTextAttributes = [.foregroundColor: UIColor(DesignSystem.caramel)]
+        appearance.stackedLayoutAppearance.normal.iconColor = UIColor(DesignSystem.caramel.opacity(0.8))
+        appearance.stackedLayoutAppearance.normal.titleTextAttributes = [.foregroundColor: UIColor(DesignSystem.caramel.opacity(0.8))]
         
         // Add subtle shadow
         appearance.shadowColor = UIColor(DesignSystem.shadowColor)
@@ -149,7 +150,6 @@ struct HomeView: View {
         GeometryReader { geometry in
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 32) {
-                    // Header with App Name and Notification (light text on gradient)
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Decor")
@@ -176,14 +176,9 @@ struct HomeView: View {
                     .padding(.horizontal, 24)
                     .padding(.top, geometry.safeAreaInsets.top)
                     
-                    // Hero Banner Card
-                    if resultsVM.designs.isEmpty {
-                        WelcomeBannerCard(selectedTab: $selectedTab)
-                            .padding(.horizontal, 24)
-                    } else {
-                        PromotionBannerCard()
-                            .padding(.horizontal, 24)
-                    }
+                    // Hero Banner Card – always "Transform Your Space"
+                    WelcomeBannerCard(selectedTab: $selectedTab)
+                        .padding(.horizontal, 24)
                     
                     // Recent Designs Section
                     if !resultsVM.designs.isEmpty {
@@ -192,7 +187,7 @@ struct HomeView: View {
                                 Text("Recent Designs")
                                     .font(.title2)
                                     .fontWeight(.bold)
-                                    .foregroundColor(DesignSystem.textDark)
+                                    .foregroundColor(DesignSystem.sand)
                                 
                                 Spacer()
                                 
@@ -274,7 +269,6 @@ struct HomeView: View {
                         .frame(height: 120)
                 }
             }
-            .scrollDisabled(true)
             .background(AppBackgroundView(withGrain: true))
             .navigationBarHidden(true)
             .onAppear {
@@ -920,6 +914,11 @@ struct FurnishedResultView: View {
     let sceneId: String
     let roomModel: RoomModel?
     @Environment(\.dismiss) var dismiss
+    @State private var showAR = false
+
+    private var arDesign: GeneratedDesign {
+        GeneratedDesign(sceneId: sceneId, roomModel: roomModel, furniture: furniture)
+    }
 
     var body: some View {
         NavigationView {
@@ -934,7 +933,9 @@ struct FurnishedResultView: View {
                                     .fontWeight(.bold)
                                     .foregroundColor(DesignSystem.textDark)
                                 
-                                Text("\(furniture.count) furniture items selected")
+                                Text(furniture.isEmpty && roomModel != nil
+                                     ? "Your room is ready to view in AR"
+                                     : "\(furniture.count) furniture items selected")
                                     .font(.title3)
                                     .fontWeight(.medium)
                                     .foregroundColor(DesignSystem.textMedium)
@@ -955,21 +956,20 @@ struct FurnishedResultView: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 20)
 
-                    // AR View Button
-                    NavigationLink(destination: ARDesignView(design: GeneratedDesign(
-                        sceneId: sceneId,
-                        roomModel: roomModel,
-                        furniture: furniture
-                    ))) {
-                        ModernActionButton(
-                            title: "View in AR",
-                            subtitle: "Experience your design in augmented reality",
-                            icon: "arkit",
-                            style: .gradient,
-                            action: {}
-                        )
-                    }
+                    // View in AR – single button triggers fullScreenCover (nested Button was swallowing taps)
+                    ModernActionButton(
+                        title: "View in AR",
+                        subtitle: furniture.isEmpty && roomModel != nil
+                            ? "See your scanned room in augmented reality"
+                            : "Experience your design in augmented reality",
+                        icon: "arkit",
+                        style: .gradient,
+                        action: { showAR = true }
+                    )
                     .padding(.horizontal, 20)
+                    .fullScreenCover(isPresented: $showAR) {
+                        ARDesignView(design: arDesign)
+                    }
 
                     // Summary Card
                     ModernDesignSummaryCard(furniture: furniture)
@@ -1004,10 +1004,12 @@ struct FurnishedResultView: View {
 struct ScanView: View {
     @State private var showRoomScanner = false
     @State private var capturedRoomURL: URL?
+    @State private var selectedRoomType = "bedroom"
     @ObservedObject private var furnishVM = FurnishViewModel()
     @State private var showResult = false
-    @State private var serverURLText: String = ""
     @State private var contentAppeared = false
+    
+    private static let roomTypes = ["bedroom", "living room", "kitchen", "office", "dining room", "bathroom"]
 
     var body: some View {
         NavigationView {
@@ -1139,42 +1141,33 @@ struct ScanView: View {
                                             .strokeBorder(DesignSystem.softBrown.opacity(0.2), lineWidth: 1)
                                     )
                                     
-                                    // Send to server section
-                                    VStack(alignment: .leading, spacing: 12) {
-                                        Text("Send to server")
-                                            .font(.headline)
-                                            .fontWeight(.semibold)
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 36))
+                                        .foregroundColor(Color(red: 0.35, green: 0.7, blue: 0.4))
+                                    
+                                    Text("Room Scanned Successfully!")
+                                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                                        .foregroundColor(.white)
+                                    
+                                    // Room Type – its own card (same style as "Room file created")
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "square.grid.2x2.fill")
+                                            .font(.title2)
                                             .foregroundColor(DesignSystem.textDark)
-                                        TextField("Server URL", text: $serverURLText)
-                                            .textFieldStyle(.plain)
-                                            .foregroundColor(DesignSystem.textDark)
-                                            .padding(12)
-                                            .background(DesignSystem.cardBackground)
-                                            .cornerRadius(12)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 12)
-                                                    .strokeBorder(DesignSystem.mediumBrown.opacity(0.35), lineWidth: 1)
-                                            )
-                                            .autocapitalization(.none)
-                                            .keyboardType(.URL)
-                                        Button(action: {}) {
-                                            HStack(spacing: 8) {
-                                                Image(systemName: "arrow.up.circle.fill")
-                                                Text("Send room file (USDZ)")
-                                                    .fontWeight(.medium)
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("Room type")
+                                                .font(.subheadline)
+                                                .fontWeight(.semibold)
+                                                .foregroundColor(DesignSystem.textDark)
+                                            Picker("Room type", selection: $selectedRoomType) {
+                                                ForEach(Self.roomTypes, id: \.self) { type in
+                                                    Text(type.capitalized).tag(type)
+                                                }
                                             }
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 12)
-                                            .foregroundColor(.white)
-                                            .background(
-                                                LinearGradient(
-                                                    colors: [DesignSystem.darkBrown, DesignSystem.mediumBrown],
-                                                    startPoint: .leading,
-                                                    endPoint: .trailing
-                                                )
-                                            )
-                                            .cornerRadius(14)
+                                            .pickerStyle(.menu)
+                                            .tint(DesignSystem.textDark)
                                         }
+                                        Spacer()
                                     }
                                     .padding(18)
                                     .background(DesignSystem.cardBackground)
@@ -1185,20 +1178,12 @@ struct ScanView: View {
                                             .strokeBorder(DesignSystem.softBrown.opacity(0.2), lineWidth: 1)
                                     )
                                     
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 36))
-                                        .foregroundColor(Color(red: 0.35, green: 0.7, blue: 0.4))
-                                    
-                                    Text("Room Scanned Successfully!")
-                                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                                        .foregroundColor(DesignSystem.textDark)
-                                    
                                     Button(action: {
                                         if let roomURL = capturedRoomURL {
                                             Task {
                                                 await furnishVM.generateDesign(
                                                     fromRoomURL: roomURL,
-                                                    roomType: "bedroom",
+                                                    roomType: selectedRoomType,
                                                     budget: "5000"
                                                 )
                                                 if furnishVM.result != nil {
@@ -1215,22 +1200,10 @@ struct ScanView: View {
                                                 .fontWeight(.semibold)
                                         }
                                         .foregroundColor(.white)
-                                        .padding(.horizontal, 32)
+                                        .frame(maxWidth: .infinity)
                                         .padding(.vertical, 16)
-                                        .background(
-                                            LinearGradient(
-                                                colors: [DesignSystem.mediumBrown, DesignSystem.lightBrown, DesignSystem.caramel.opacity(0.95)],
-                                                startPoint: .leading,
-                                                endPoint: .trailing
-                                            )
-                                        )
-                                        .cornerRadius(28)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 28)
-                                                .strokeBorder(DesignSystem.softBrown.opacity(0.4), lineWidth: 1)
-                                        )
-                                        .shadow(color: DesignSystem.shadowWarm, radius: 14, x: 0, y: 6)
-                                        .shadow(color: DesignSystem.mediumBrown.opacity(0.3), radius: 16, x: 0, y: 8)
+                                        .background(DesignSystem.caramel)
+                                        .cornerRadius(14)
                                     }
                                     .buttonStyle(.plain)
                                 }

@@ -3,12 +3,52 @@ import Foundation
 class FurnisherAPI {
     static let shared = FurnisherAPI()
     
-    private let baseURL = "http://136.116.236.142:5000"
+    /// Use HTTPS (ngrok) to satisfy App Transport Security.
+    private let baseURL = "https://lavonia-undeducted-aida.ngrok-free.dev"
     
     private init() {}
     
+    /// Room scan pipeline (same server, /roomscan).
+    private static let roomScanPipelineBaseURL = "https://lavonia-undeducted-aida.ngrok-free.dev"
+    
+    /// Upload USDZ + room_type to the room scan pipeline endpoint.
+    func uploadRoomScanToPipeline(usdzURL: URL, roomType: String) async throws {
+        var urlString = Self.roomScanPipelineBaseURL
+        if !urlString.hasSuffix("/roomscan") {
+            urlString = urlString.hasSuffix("/") ? urlString + "roomscan" : urlString + "/roomscan"
+        }
+        guard let url = URL(string: urlString) else { throw FurnisherAPIError.invalidURL }
+        guard let fileData = try? Data(contentsOf: usdzURL) else { throw FurnisherAPIError.noFileData }
+        
+        let boundary = UUID().uuidString
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("1", forHTTPHeaderField: "ngrok-skip-browser-warning")
+        request.timeoutInterval = 120
+        
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"room_type\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(roomType)\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(usdzURL.lastPathComponent)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else { throw FurnisherAPIError.invalidResponse }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "Server error"
+            throw FurnisherAPIError.serverError(httpResponse.statusCode, message)
+        }
+    }
+    
     func sendRoomScan(usdzURL: URL, roomType: String = "bedroom", budget: String = "5000") async throws -> FurnishedResponse {
-        guard let url = URL(string: "\(baseURL)/generate-design") else {
+        guard let url = URL(string: "\(baseURL)/roomscan") else {
             throw FurnisherAPIError.invalidURL
         }
         
@@ -20,6 +60,7 @@ class FurnisherAPI {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("1", forHTTPHeaderField: "ngrok-skip-browser-warning")
         request.timeoutInterval = 180
         
         var body = Data()
@@ -84,13 +125,16 @@ class FurnisherAPI {
                 )
             )
         }
-        let roomModel = RoomModel(
-            id: UUID().uuidString,
-            dimensions: nil,
-            walls: [],
-            features: [],
-            roomModelUrlUsdz: constructFullURL(response.roomScanUrl)
-        )
+        let roomUrl = response.roomScanUrl.flatMap { s in s.isEmpty ? nil : s }
+        let roomModel: RoomModel? = roomUrl.map { url in
+            RoomModel(
+                id: UUID().uuidString,
+                dimensions: nil,
+                walls: [],
+                features: [],
+                roomModelUrlUsdz: constructFullURL(url)
+            )
+        }
         return FurnishedResponse(
             sceneId: response.scanId,
             roomModel: roomModel,

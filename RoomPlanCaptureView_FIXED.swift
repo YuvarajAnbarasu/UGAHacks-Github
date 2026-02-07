@@ -77,8 +77,8 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
             lastProgressTime = Date()
             print("📈 Geometry progress detected - walls: \(lastWallCount) -> \(walls), objects: \(lastObjectCount) -> \(objects)")
             
-            Task { @MainActor in
-                captureController.markGeometryProgress()
+            DispatchQueue.main.async { [weak captureController] in
+                captureController?.markGeometryProgress()
             }
         } else {
             let stalledFor = Date().timeIntervalSince(lastProgressTime)
@@ -93,8 +93,8 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
             }
         }
         
-        Task { @MainActor in
-            captureController.didReceiveUpdate()
+        DispatchQueue.main.async { [weak captureController] in
+            captureController?.didReceiveUpdate()
         }
     }
 
@@ -107,14 +107,14 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
 
         guard let room = latestRoom else {
             print("❌ No captured room available for export")
-            Task { @MainActor in
-                captureController.isExporting = false
+            DispatchQueue.main.async { [weak captureController] in
+                captureController?.isExporting = false
             }
             return
         }
 
-        Task { @MainActor in
-            captureController.isExporting = true
+        DispatchQueue.main.async { [weak captureController] in
+            captureController?.isExporting = true
         }
         Task.detached { [weak self] in
             do {
@@ -162,8 +162,8 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
 
     func captureSession(_ session: RoomCaptureSession, didStartWith configuration: RoomCaptureSession.Configuration) {
         print("🚀 Session didStartWith configuration")
-        Task { @MainActor in
-            captureController.sessionDidStart()
+        DispatchQueue.main.async { [weak captureController] in
+            captureController?.sessionDidStart()
         }
     }
 
@@ -179,8 +179,8 @@ final class RoomPlanCaptureCoordinator: NSObject, NSCoding, RoomCaptureSessionDe
         @unknown default: text = "Continue scanning"
         }
         print("📋 Session didProvide instruction: \(text)")
-        Task { @MainActor in
-            captureController.updateInstruction(text)
+        DispatchQueue.main.async { [weak captureController] in
+            captureController?.updateInstruction(text)
         }
     }
 
@@ -706,6 +706,7 @@ final class RoomPlanCaptureController: ObservableObject {
         sessionProgress = "Checking permissions..."
         
         // Reset session state
+        sessionDidStartCalled = false
         hasReceivedInstructions = false
         hasReceivedUpdates = false
         isStuck = false
@@ -736,6 +737,7 @@ final class RoomPlanCaptureController: ObservableObject {
         canStartSession = false
         didStart = false
         isStartingSession = false
+        sessionDidStartCalled = false
         isStuck = false
         scanningState = .scanning
         roomWallCount = 0
@@ -775,7 +777,11 @@ final class RoomPlanCaptureController: ObservableObject {
         restartInstructionTimer()
     }
 
+    private var sessionDidStartCalled = false
+    
     func sessionDidStart() {
+        guard !sessionDidStartCalled else { return }
+        sessionDidStartCalled = true
         print("✅ sessionDidStart called")
         if let startTime = sessionStartTime {
             let elapsed = Date().timeIntervalSince(startTime)
@@ -818,7 +824,8 @@ final class RoomPlanCaptureController: ObservableObject {
             let geometryStalledFor = Date().timeIntervalSince(self.lastProgressTime)
             let wallCount = self.roomWallCount
             
-            Task { @MainActor in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
                 // Don't show warning when room has 4+ walls — auto-complete will run; showing "Try Again" is confusing
                 if wallCount >= 4 { return }
                 if geometryStalledFor > self.stuckGeometryThreshold {
@@ -835,7 +842,7 @@ final class RoomPlanCaptureController: ObservableObject {
     private func restartInstructionTimer() {
         instructionTimer?.invalidate()
         instructionTimer = Timer.scheduledTimer(withTimeInterval: stuckTimeoutInterval, repeats: false) { [weak self] _ in
-            Task { @MainActor in
+            DispatchQueue.main.async { [weak self] in
                 self?.isStuck = true
                 self?.currentInstruction = "Session may be stuck - try moving around or tap Complete to finish"
             }
@@ -879,28 +886,20 @@ struct RoomPlanCaptureViewRepresentable: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: RoomPlan.RoomCaptureView, context: Context) {
-        // Ensure we're on main thread
-        guard Thread.isMainThread else { 
-            print("⚠️ updateUIView not on main thread")
-            return 
-        }
-        
-        // Prevent multiple session starts
+        guard Thread.isMainThread else { return }
         guard captureController.canStartSession,
               !captureController.didStart,
               !captureController.isStartingSession,
               let session = uiView.captureSession
         else { return }
 
-        // Atomic flag setting to prevent double-start
+        // Defer session start to next run loop to avoid "Modifying state during view update"
         captureController.didStart = true
-        
-        print("🔍 Starting RoomPlan session on main thread")
-        
-        // Start session immediately on main thread - RoomPlan/ARKit requirement
-        let config = RoomCaptureSession.Configuration()
-        session.run(configuration: config)
-        captureController.sessionDidStart()
+        DispatchQueue.main.async {
+            print("🔍 Starting RoomPlan session on main thread")
+            let config = RoomCaptureSession.Configuration()
+            session.run(configuration: config)
+        }
     }
 
     func makeCoordinator() -> RoomPlanCaptureCoordinator {
