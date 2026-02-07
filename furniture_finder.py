@@ -1,17 +1,3 @@
-"""
-╔══════════════════════════════════════════════════════════════════╗
-║               🪑 FitFinder — AI Furniture Discovery             ║
-║            IKEA Turbo · Parallel Product Scraping               ║
-╚══════════════════════════════════════════════════════════════════╝
-
-SETUP:
-  pip install -r requirements.txt
-  # Ensure Google Chrome is installed.
-
-RUN:
-  python -m streamlit run furniture_finder.py
-"""
-
 import streamlit as st
 import re
 import time
