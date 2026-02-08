@@ -861,17 +861,28 @@ struct ModernFurnitureItemCard: View {
     
     var body: some View {
         HStack(spacing: 16) {
-            AsyncImage(url: URL(string: item.imageUrl)) { image in
+            Group {
+                if let url = URL(string: item.imageUrl), !item.imageUrl.isEmpty {
+                    AsyncImage(url: url) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-            } placeholder: {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(DesignSystem.lightBrown.opacity(0.3))
-                    .overlay(
-                        Image(systemName: "photo")
-                            .foregroundColor(DesignSystem.textMedium)
-                    )
+                    } placeholder: {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(DesignSystem.lightBrown.opacity(0.3))
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .foregroundColor(DesignSystem.textMedium)
+                            )
+                    }
+                } else {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(DesignSystem.lightBrown.opacity(0.3))
+                        .overlay(
+                            Image(systemName: "chair.lounge.fill")
+                                .foregroundColor(DesignSystem.textMedium)
+                        )
+                }
             }
             .frame(width: 70, height: 70)
             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -886,19 +897,27 @@ struct ModernFurnitureItemCard: View {
                     .font(.title3)
                     .fontWeight(.semibold)
                     .foregroundColor(DesignSystem.textMedium)
+                
+                if let dims = item.dimensionsMeters, !dims.isEmpty {
+                    Text(dims)
+                        .font(.caption)
+                        .foregroundColor(DesignSystem.textMedium)
+                }
             }
             
             Spacer()
             
-            Link(destination: URL(string: item.url)!) {
-                Text("Buy")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(DesignSystem.darkBrown)
-                    .cornerRadius(20)
+            if let buyURL = URL(string: item.url), !item.url.isEmpty {
+                Link(destination: buyURL) {
+                    Text("Buy")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(DesignSystem.darkBrown)
+                        .cornerRadius(20)
+                }
             }
         }
         .padding(20)
@@ -931,14 +950,14 @@ struct FurnishedResultView: View {
                                 Text("Design Complete")
                                     .font(.largeTitle)
                                     .fontWeight(.bold)
-                                    .foregroundColor(DesignSystem.textDark)
+                                    .foregroundColor(DesignSystem.caramel)
                                 
                                 Text(furniture.isEmpty && roomModel != nil
                                      ? "Your room is ready to view in AR"
                                      : "\(furniture.count) furniture items selected")
                                     .font(.title3)
                                     .fontWeight(.medium)
-                                    .foregroundColor(DesignSystem.textMedium)
+                                    .foregroundColor(DesignSystem.caramel)
                             }
                             
                             Spacer()
@@ -1241,6 +1260,11 @@ struct ScanView: View {
                 )
             }
         }
+        .onChange(of: furnishVM.result?.sceneId) { _, newValue in
+            if newValue != nil {
+                showResult = true
+            }
+        }
         .sheet(isPresented: $showResult) {
             if let result = furnishVM.result {
                 FurnishedResultView(
@@ -1337,6 +1361,11 @@ struct FurnitureListRowView: View {
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundColor(DesignSystem.textMedium)
+                if let dims = item.dimensionsMeters, !dims.isEmpty {
+                    Text(dims)
+                        .font(.caption2)
+                        .foregroundColor(DesignSystem.textMedium)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

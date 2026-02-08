@@ -288,14 +288,14 @@ struct RoomCapturePreviewScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             Text("Explore your room")
-                .font(.headline)
+                .font(Theme.Typography.headline)
                 .foregroundColor(.white)
                 .padding(.top, 20)
             
             Text("Drag to rotate · Pinch to zoom")
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.7))
-                .padding(.top, 4)
+                .font(Theme.Typography.subheadline)
+                .foregroundColor(.white.opacity(0.9))
+                .padding(.top, Theme.Spacing.xs)
             
             RoomModelPreviewView(url: roomFileURL)
                 .frame(maxWidth: .infinity)
@@ -306,10 +306,10 @@ struct RoomCapturePreviewScreen: View {
             
             HStack(spacing: 16) {
                 Button(action: onRescan) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: Theme.Spacing.sm) {
                         Image(systemName: "arrow.counterclockwise")
                         Text("Rescan")
-                            .fontWeight(.semibold)
+                            .font(Theme.Typography.headline)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
@@ -319,10 +319,10 @@ struct RoomCapturePreviewScreen: View {
                 }
                 
                 Button(action: onConfirm) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: Theme.Spacing.sm) {
                         Image(systemName: "checkmark.circle.fill")
                         Text("Use this room")
-                            .fontWeight(.semibold)
+                            .font(Theme.Typography.headline)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
@@ -373,12 +373,11 @@ struct RoomPlanCaptureViewFixed: View {
                         .scaleEffect(1.5)
                         .tint(.white)
                     Text("Preparing scanner...")
-                        .font(.title3)
-                        .fontWeight(.medium)
+                        .font(Theme.Typography.title3)
                         .foregroundColor(.white)
                     Text("Releasing camera for room scan")
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.8))
+                        .font(Theme.Typography.subheadline)
+                        .foregroundColor(.white.opacity(0.9))
                 }
             }
 
@@ -412,22 +411,25 @@ struct RoomPlanCaptureViewFixed: View {
                             .foregroundColor(captureController.scanningState.iconColor)
 
                         Text(captureController.scanningState.displayTitle)
-                            .font(.system(size: 17, weight: .bold))
+                            .font(Theme.Typography.headline)
                             .foregroundColor(.white)
                             .multilineTextAlignment(.center)
+                            .lineLimit(3)
 
                         Text(captureController.scanningState.displaySubtitle)
-                            .font(.system(size: 13))
-                            .foregroundColor(.white.opacity(0.9))
+                            .font(Theme.Typography.subheadline)
+                            .foregroundColor(.white.opacity(0.95))
                             .multilineTextAlignment(.center)
+                            .lineSpacing(4)
                         
                         if let instruction = captureController.currentInstruction, 
                            !instruction.contains("Session may be stuck") {
                             Text("RoomPlan: \(instruction)")
-                                .font(.system(size: 12))
-                                .foregroundColor(.white.opacity(0.7))
+                                .font(Theme.Typography.caption)
+                                .foregroundColor(.white.opacity(0.9))
                                 .multilineTextAlignment(.center)
-                                .padding(.top, 2)
+                                .lineSpacing(2)
+                                .padding(.top, Theme.Spacing.xs)
                         }
                         
                         if captureController.scanningState == .lowQuality || captureController.scanningState == .stuck {
@@ -435,7 +437,7 @@ struct RoomPlanCaptureViewFixed: View {
                                 Button("Try Again") {
                                     captureController.markGeometryProgress()
                                 }
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(Theme.Typography.subheadline.weight(.semibold))
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
@@ -445,7 +447,7 @@ struct RoomPlanCaptureViewFixed: View {
                                 Button("Complete Anyway") {
                                     coordinator?.stopSession()
                                 }
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(Theme.Typography.subheadline.weight(.semibold))
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
@@ -493,11 +495,11 @@ struct RoomPlanCaptureViewFixed: View {
                         .scaleEffect(1.5)
                         .tint(.white)
                     Text("Saving room file...")
-                        .font(.headline)
+                        .font(Theme.Typography.headline)
                         .foregroundColor(.white)
                     Text("Creating USDZ")
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.8))
+                        .font(Theme.Typography.subheadline)
+                        .foregroundColor(.white.opacity(0.9))
                 }
                 .padding(Theme.Spacing.xl)
             }
@@ -509,11 +511,11 @@ struct RoomPlanCaptureViewFixed: View {
                         .font(.system(size: 56))
                         .foregroundColor(.green)
                     Text("Room saved")
-                        .font(.title2.bold())
+                        .font(Theme.Typography.title2)
                         .foregroundColor(.white)
                     Text(name)
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.9))
+                        .font(Theme.Typography.subheadline)
+                        .foregroundColor(.white.opacity(0.95))
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }

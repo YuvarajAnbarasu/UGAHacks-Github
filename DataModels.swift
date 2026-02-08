@@ -13,12 +13,15 @@ struct FurnitureItem: Identifiable, Codable {
     let description: String?
     let modelUrlUsdz: String?
     let placement: FurniturePlacement?
+    /// Dimensions in meters (e.g., "0.80 × 0.80 × 0.80 m") from backend.
+    let dimensionsMeters: String?
     
     enum CodingKeys: String, CodingKey {
         case name, price, imageUrl, url, category, description, modelUrlUsdz, placement
+        case dimensionsMeters = "dimensionsMeters"
     }
     
-    init(name: String, price: Double, imageUrl: String, url: String, category: String = "furniture", description: String? = nil, modelUrlUsdz: String? = nil, placement: FurniturePlacement? = nil, id: UUID = UUID()) {
+    init(name: String, price: Double, imageUrl: String, url: String, category: String = "furniture", description: String? = nil, modelUrlUsdz: String? = nil, placement: FurniturePlacement? = nil, dimensionsMeters: String? = nil, id: UUID = UUID()) {
         self.id = id
         self.name = name
         self.price = price
@@ -28,6 +31,7 @@ struct FurnitureItem: Identifiable, Codable {
         self.description = description
         self.modelUrlUsdz = modelUrlUsdz
         self.placement = placement
+        self.dimensionsMeters = dimensionsMeters
     }
     
     init(from decoder: Decoder) throws {
@@ -35,12 +39,13 @@ struct FurnitureItem: Identifiable, Codable {
         id = UUID()
         name = try c.decode(String.self, forKey: .name)
         price = try c.decode(Double.self, forKey: .price)
-        imageUrl = try c.decode(String.self, forKey: .imageUrl)
+        imageUrl = try c.decodeIfPresent(String.self, forKey: .imageUrl) ?? ""
         url = try c.decode(String.self, forKey: .url)
         category = try c.decodeIfPresent(String.self, forKey: .category) ?? "furniture"
         description = try c.decodeIfPresent(String.self, forKey: .description)
         modelUrlUsdz = try c.decodeIfPresent(String.self, forKey: .modelUrlUsdz)
         placement = try c.decodeIfPresent(FurniturePlacement.self, forKey: .placement)
+        dimensionsMeters = try c.decodeIfPresent(String.self, forKey: .dimensionsMeters)
     }
     
     func encode(to encoder: Encoder) throws {
@@ -53,6 +58,7 @@ struct FurnitureItem: Identifiable, Codable {
         try c.encodeIfPresent(description, forKey: .description)
         try c.encodeIfPresent(modelUrlUsdz, forKey: .modelUrlUsdz)
         try c.encodeIfPresent(placement, forKey: .placement)
+        try c.encodeIfPresent(dimensionsMeters, forKey: .dimensionsMeters)
     }
 }
 
@@ -237,7 +243,8 @@ extension FurnitureItem {
                 position: Position3D(x: 0, y: 0, z: -2),
                 rotation: Rotation3D(x: 0, y: 0, z: 0),
                 scale: Scale3D(x: 1, y: 1, z: 1)
-            )
+            ),
+            dimensionsMeters: "2.10 × 0.90 × 0.85 m"
         ),
         FurnitureItem(
             name: "Coffee Table",
@@ -251,7 +258,8 @@ extension FurnitureItem {
                 position: Position3D(x: 0, y: 0, z: -1),
                 rotation: Rotation3D(x: 0, y: 0, z: 0),
                 scale: Scale3D(x: 1, y: 1, z: 1)
-            )
+            ),
+            dimensionsMeters: "1.20 × 0.60 × 0.45 m"
         ),
         FurnitureItem(
             name: "Floor Lamp",
@@ -265,7 +273,8 @@ extension FurnitureItem {
                 position: Position3D(x: 1.5, y: 0, z: -2.5),
                 rotation: Rotation3D(x: 0, y: 0, z: 0),
                 scale: Scale3D(x: 1, y: 1, z: 1)
-            )
+            ),
+            dimensionsMeters: "0.25 × 1.60 × 0.25 m"
         )
     ]
 }
