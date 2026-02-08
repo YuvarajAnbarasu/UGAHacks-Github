@@ -57,7 +57,7 @@ print("⏳ INITIALIZING: Loading TRELLIS Model...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 try:
-    # Using the official Microsoft repository as per example.py
+    # Using the official Microsoft repository
     pipeline = TrellisImageTo3DPipeline.from_pretrained(
         "Microsoft/TRELLIS-image-large"
     )
@@ -91,39 +91,6 @@ def resize_foreground(image, ratio):
     ph1, pw1 = new_size - size - ph0, new_size - size - pw0
     new_image = np.pad(new_image, ((ph0, ph1), (pw0, pw1), (0, 0)), mode="constant", constant_values=0)
     return Image.fromarray(new_image)
-
-def rotation_matrix_from_vectors(vec1, vec2):
-    a, b = (vec1 / np.linalg.norm(vec1)), (vec2 / np.linalg.norm(vec2))
-    v = np.cross(a, b)
-    s = np.linalg.norm(v)
-    if s == 0: return np.eye(4)
-    kmat = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-    rotation_matrix = np.eye(3) + kmat + kmat.dot(kmat) * ((1 - np.dot(a, b)) / (s ** 2))
-    M = np.eye(4)
-    M[:3, :3] = rotation_matrix
-    return M
-
-def geometry_auto_level(mesh, bottom_percent=10.0):
-    try:
-        vertices = mesh.vertices
-        min_y, max_y = np.min(vertices[:, 1]), np.max(vertices[:, 1])
-        decimal = max(min(float(bottom_percent) / 100.0, 0.5), 0.01)
-        thresh = min_y + (max_y - min_y) * decimal
-        feet_points = vertices[vertices[:, 1] < thresh]
-        if len(feet_points) < 10: return mesh
-        centroid = np.mean(feet_points, axis=0)
-        u, s, vh = np.linalg.svd((feet_points - centroid).T)
-        normal = u[:, -1]
-        if normal[1] < 0: normal = -normal
-        up = np.array([0, 1, 0])
-        angle = np.degrees(np.arccos(max(min(np.dot(normal, up), 1.0), -1.0)))
-        if 0.5 < angle < 15.0:
-            R = rotation_matrix_from_vectors(normal, up)
-            mesh.apply_transform(R)
-            print(f"   📐 Leveled mesh (Angle: {angle:.2f}°)")
-    except Exception as e:
-        print(f"   ⚠️ Leveling failed: {e}")
-    return mesh
 
 def enhance_image_for_3d(pil_img):
     img = pil_img.filter(ImageFilter.SMOOTH_MORE)
@@ -284,7 +251,7 @@ def export_usdz_manually(mesh, output_path):
     UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(stage_path), output_path)
     return True
 
-def run_pipeline_return_bytes(pil_img, percentage=10, output_format='usdz'):
+def run_pipeline_return_bytes(pil_img, output_format='usdz'):
     print(f"🎨 Stage 5: Starting TRELLIS Reconstruction (Output: {output_format.upper()})...")
     start_time = time.time()
     temp_dir = tempfile.mkdtemp()
@@ -295,7 +262,7 @@ def run_pipeline_return_bytes(pil_img, percentage=10, output_format='usdz'):
         img = resize_foreground(img, 0.85) 
         
         print("   🧠 Running TRELLIS Inference...")
-        # We need both Gaussian and Mesh for the exporter
+        # Request both formats to satisfy to_glb requirements
         outputs = pipeline.run(
             img, 
             seed=1, 
@@ -303,13 +270,12 @@ def run_pipeline_return_bytes(pil_img, percentage=10, output_format='usdz'):
             preprocess_image=False
         )
         
-        # --- CORRECTED EXTRACTION LOGIC ---
-        # The pipeline returns lists for each format. We take the first item.
+        # Extract results
         trellis_gaussian = outputs['gaussian'][0]
         trellis_mesh = outputs['mesh'][0]
         
         print("   🧱 Generating GLB from Gaussian + Mesh...")
-        # Correct call: to_glb(gaussian, mesh, ...)
+        # Create GLB object using both inputs
         glb_object = postprocessing_utils.to_glb(
             trellis_gaussian, 
             trellis_mesh, 
@@ -318,23 +284,25 @@ def run_pipeline_return_bytes(pil_img, percentage=10, output_format='usdz'):
             verbose=False
         )
         
-        # Save raw GLB first (needed for both formats)
+        # Save raw GLB (needed for both formats)
         raw_glb_path = os.path.join(temp_dir, "trellis_raw.glb")
         glb_object.export(raw_glb_path)
 
-        # Load into Trimesh for auto-leveling
+        # Load into Trimesh for post-processing
         tm = trimesh.load(raw_glb_path, file_type='glb', force='mesh')
 
-        # --- Post-Processing ---
-        tm.apply_translation([-tm.centroid[0], 0, -tm.centroid[2]]) # Center X/Z
-        tm = geometry_auto_level(tm, bottom_percent=percentage)     # Level
-        tm.apply_translation([0, -tm.bounds[0][1], 0])              # Floor to Y=0
+        # --- Simple Post-Processing (No Auto-Leveling) ---
+        # 1. Center on X/Z axis
+        tm.apply_translation([-tm.centroid[0], 0, -tm.centroid[2]]) 
+        # 2. Place on floor (Y=0)
+        tm.apply_translation([0, -tm.bounds[0][1], 0])              
 
+        # Calculate bounds for scaling logic later
         bmin, bmax = tm.bounds[0], tm.bounds[1]
         bounds_m = (max(bmax[0]-bmin[0], 0.01), max(bmax[1]-bmin[1], 0.01), max(bmax[2]-bmin[2], 0.01))
 
         if output_format == 'glb':
-            print("   📦 Exporting GLB for Debug...")
+            print("   📦 Exporting GLB...")
             out_path = os.path.join(temp_dir, "output.glb")
             tm.export(out_path, file_type='glb')
             mimetype = "model/gltf-binary"
@@ -381,7 +349,7 @@ def dream():
     except Exception as e: return jsonify({"error": f"Image download failed: {e}"}), 500
 
     try:
-        glb_bytes, mimetype, _ = run_pipeline_return_bytes(img, percentage=10, output_format='glb')
+        glb_bytes, mimetype, _ = run_pipeline_return_bytes(img, output_format='glb')
         filename = f"{query.replace(' ', '_')}.glb"
         return Response(glb_bytes, mimetype=mimetype, headers={
             "Content-Disposition": f"attachment; filename={filename}"
@@ -414,7 +382,8 @@ def roomscan_to_furniture():
         except Exception: continue
         
         try:
-            usdz_bytes, mimetype, bounds_m = run_pipeline_return_bytes(img, percentage=10, output_format='usdz')
+            # Main app uses USDZ
+            usdz_bytes, mimetype, bounds_m = run_pipeline_return_bytes(img, output_format='usdz')
             built.append((product, usdz_bytes, mimetype, bounds_m))
         except Exception as e:
             print(f"⚠️ Pipeline failed for {query}: {e}")
@@ -427,6 +396,7 @@ def roomscan_to_furniture():
         model_id = str(uuid.uuid4())
         model_store[model_id] = (usdz_bytes, mimetype)
         
+        # Simple floor layout logic
         rw, rd = room_dims["w"]/100.0, room_dims["d"]/100.0
         x_span, z_span = max(rw-0.8, 1.0), max(rd-0.8, 1.0)
         positions = [(0,0,0)]
