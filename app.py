@@ -1,7 +1,7 @@
 import os
 import sys
 
-# --- CRITICAL CONFIGURATION: MUST BE AT THE VERY TOP ---
+# --- CONFIGURATION ---
 os.environ['ATTN_BACKEND'] = 'xformers'   
 os.environ['SPCONV_ALGO'] = 'native'      
 
@@ -18,10 +18,12 @@ import tempfile
 import numpy as np
 import rembg
 import trimesh
+import aspose.threed as a3d
+
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from PIL import Image, ImageEnhance, ImageFilter
-from pxr import Usd, UsdGeom, UsdShade, Sdf, UsdUtils
+from pxr import Usd, UsdGeom
 
 # --- TRELLIS IMPORTS ---
 if os.getcwd() not in sys.path:
@@ -31,14 +33,14 @@ try:
     from trellis.pipelines import TrellisImageTo3DPipeline
     from trellis.utils import postprocessing_utils
 except ImportError:
-    print("❌ Error: Could not import 'trellis'. Make sure you are running this script from inside the TRELLIS folder.")
+    print("❌ Error: Could not import 'trellis'.")
     sys.exit(1)
 
 from google import genai
 from google.genai import types
 
 # ==========================================
-# 1. CONFIGURATION & CLIENTS
+# 1. SETUP
 # ==========================================
 API_KEY = "AIzaSyD5eKao6gTHNddQcTgd0AvEYWkxJQZU9Pg"
 client = genai.Client(api_key=API_KEY)
@@ -50,34 +52,37 @@ CORS(app)
 model_store = {}
 rembg_session = rembg.new_session()
 
-# ==========================================
-# 2. MODEL INITIALIZATION (TRELLIS)
-# ==========================================
 print("⏳ INITIALIZING: Loading TRELLIS Model...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
 try:
-    # Using the official Microsoft repository
-    pipeline = TrellisImageTo3DPipeline.from_pretrained(
-        "Microsoft/TRELLIS-image-large"
-    )
+    pipeline = TrellisImageTo3DPipeline.from_pretrained("Microsoft/TRELLIS-image-large")
     pipeline.to(device)
     print(f"✅ TRELLIS loaded on {device}")
 except Exception as e:
     print(f"❌ CRITICAL ERROR: Model failed to load. {e}")
-    traceback.print_exc()
     exit(1)
 
 # ==========================================
-# 3. GEOMETRY & UTILS
+# 2. ASPOSE CONVERSION (GLB -> USDZ)
 # ==========================================
+def convert_glb_to_usdz_aspose(glb_path, output_usdz_path):
+    try:
+        scene = a3d.Scene.from_file(glb_path)
+        scene.save(output_usdz_path, a3d.FileFormat.USDZ)
+        return True
+    except Exception as e:
+        print(f"❌ Aspose Conversion Failed: {e}")
+        return False
 
+# ==========================================
+# 3. HELPER FUNCTIONS
+# ==========================================
 def remove_background(image, session=None):
     return rembg.remove(image, session=session)
 
 def resize_foreground(image, ratio):
     image = np.array(image)
-    assert image.shape[-1] == 4
+    if image.shape[-1] != 4: return Image.fromarray(image)
     alpha = np.where(image[..., 3] > 0)
     if len(alpha[0]) == 0: return Image.fromarray(image)
     y1, y2, x1, x2 = np.min(alpha[0]), np.max(alpha[0]), np.min(alpha[1]), np.max(alpha[1])
@@ -92,18 +97,7 @@ def resize_foreground(image, ratio):
     new_image = np.pad(new_image, ((ph0, ph1), (pw0, pw1), (0, 0)), mode="constant", constant_values=0)
     return Image.fromarray(new_image)
 
-def enhance_image_for_3d(pil_img):
-    img = pil_img.filter(ImageFilter.SMOOTH_MORE)
-    img = ImageEnhance.Sharpness(img).enhance(1.5)
-    img = ImageEnhance.Contrast(img).enhance(1.1)
-    return img
-
-# ==========================================
-# 4. USDZ & GEMINI AI LOGIC
-# ==========================================
-
 def get_room_dimensions_from_buffer(file_storage):
-    print("📏 Stage 1: Reading USDZ Dimensions...")
     temp_path = "temp_scan.usdz"
     file_storage.save(temp_path)
     try:
@@ -111,22 +105,44 @@ def get_room_dimensions_from_buffer(file_storage):
         if not stage: return None
         m_per_u = UsdGeom.GetStageMetersPerUnit(stage)
         bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
-        size = bbox_cache.ComputeWorldBound(stage.GetPseudoRoot()).GetRange().GetSize()
-        dims = {"w": size[0]*m_per_u*100, "h": size[1]*m_per_u*100, "d": size[2]*m_per_u*100}
-        print(f"✅ Dimensions Found (cm): {dims}")
+        root_prim = stage.GetPseudoRoot()
+        size = bbox_cache.ComputeWorldBound(root_prim).GetRange().GetSize()
+        
+        dims = {
+            "w": size[0] * m_per_u * 100,
+            "h": size[1] * m_per_u * 100,
+            "d": size[2] * m_per_u * 100
+        }
+        print(f"✅ Room Dimensions (cm): {dims}")
         return dims
     finally:
         if os.path.exists(temp_path): os.remove(temp_path)
 
-def ask_gemini_for_furniture(dims, room_type, num_items=3):
-    print(f"🤖 Stage 2: Prompting {MODEL_ID} for {num_items} items in {room_type}...")
+def ask_gemini_for_furniture(dims, room_type):
+    print(f"🤖 Design Stage: Analyzing room ({dims['w']:.0f}x{dims['d']:.0f} cm)...")
+    
     prompt = f"""
-    A user scanned a {room_type} with dimensions (cm): W: {dims['w']:.1f}, H: {dims['h']:.1f}, D: {dims['d']:.1f}.
-    Suggest exactly {num_items} IKEA furniture pieces that would fit and look good together.
-    Return JSON only, no markdown:
-    {{ "items": [
-      {{ "furniture_query": "IKEA product name", "target_width_cm": number, "target_depth_cm": number, "target_height_cm": number }}
-    ]}}
+    You are an expert Interior Designer.
+    The user has scanned a '{room_type}' with dimensions: Width {dims['w']:.0f}cm, Depth {dims['d']:.0f}cm.
+    
+    Your Goal:
+    Suggest a cohesive furniture arrangement that fits this specific space comfortably.
+    - If the room is small, suggest fewer, compact items (2-3 items).
+    - If the room is large, fill it appropriately (max 5 items).
+    - Ensure the items match in style (e.g., Modern, Minimalist, Industrial).
+    
+    CRITICAL INSTRUCTIONS:
+    1. Do NOT use brand names (No 'IKEA', 'West Elm', etc.).
+    2. Use purely DESCRIPTIVE queries for the 'furniture_query' field (e.g., 'Modern beige fabric sofa', 'Walnut wood coffee table', 'Industrial metal floor lamp').
+    3. Estimate realistic dimensions (cm) for each item.
+    
+    Return JSON only:
+    {{ 
+      "style": "Brief description of the chosen style",
+      "items": [ 
+        {{ "furniture_query": "Visual description for search", "target_width_cm": number, "target_depth_cm": number, "target_height_cm": number }}
+      ]
+    }}
     """
     try:
         response = client.models.generate_content(
@@ -134,13 +150,15 @@ def ask_gemini_for_furniture(dims, room_type, num_items=3):
             config=types.GenerateContentConfig(response_mime_type='application/json')
         )
         data = json.loads(response.text)
-        return data.get("items", [])
+        items = data.get("items", [])
+        print(f"   💡 Gemini suggested {len(items)} items. Style: {data.get('style', 'Mixed')}")
+        return items
     except Exception as e:
-        print(f"❌ Gemini Error: {e}")
-        return [{"furniture_query": "IKEA Chair", "target_width_cm": 50, "target_depth_cm": 50, "target_height_cm": 80}]
+        print(f"   ⚠️ AI Error: {e}")
+        return [{"furniture_query": "Modern Lounge Chair", "target_width_cm": 80, "target_depth_cm": 80, "target_height_cm": 80}]
 
 # ==========================================
-# 5. SCRAPER LOGIC
+# 4. SCRAPER (Acts as Search Engine)
 # ==========================================
 try:
     from selenium import webdriver
@@ -161,7 +179,7 @@ def create_driver():
     return webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=opts)
 
 def fetch_search_results(query, max_items=1):
-    print(f"🔎 Stage 3: Searching IKEA for '{query}'...")
+    print(f"🔎 Searching for '{query}'...")
     driver = create_driver()
     if not driver: return []
     links = []
@@ -178,7 +196,6 @@ def fetch_search_results(query, max_items=1):
     return links
 
 def fetch_product_details(link_data):
-    print(f"📸 Stage 4: Fetching product details from {link_data['url']}")
     driver = create_driver()
     if not driver: return None
     try:
@@ -188,248 +205,171 @@ def fetch_product_details(link_data):
         og_img = soup.find("meta", property="og:image")
         image_url = og_img["content"].split("?")[0] if og_img else ""
         
-        price = 99.00
-        price_el = soup.select_one('[data-testid="price"]')
-        if price_el:
-            txt = price_el.get_text(strip=True).replace(",", "")
-            nums = re.findall(r"[\d.]+", txt)
-            if nums: price = float(nums[0])
-
+        # Default dims if not found
+        w, h, d = 80, 80, 80
+        
         return {
             "name": link_data["title"], "image_url": image_url, "link": link_data["url"],
-            "price": price, "width_cm": 80, "height_cm": 80, "depth_cm": 80 
+            "price": 99.0, "width_cm": w, "height_cm": h, "depth_cm": d 
         }
-    finally:
-        driver.quit()
+    finally: driver.quit()
 
 # ==========================================
-# 6. PIPELINE & USDZ EXPORT
+# 5. PIPELINE EXECUTION (WITH ASPOSE)
 # ==========================================
-
-def export_usdz_manually(mesh, output_path):
-    stage_path = output_path.replace(".usdz", ".usdc")
-    stage = Usd.Stage.CreateNew(stage_path)
-    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
-
-    root = UsdGeom.Xform.Define(stage, '/Root')
-    mesh_prim = UsdGeom.Mesh.Define(stage, '/Root/Model')
-
-    points = mesh.vertices.tolist()
-    face_vertex_counts = [len(f) for f in mesh.faces]
-    face_vertex_indices = mesh.faces.flatten().tolist()
-
-    mesh_prim.GetPointsAttr().Set(points)
-    mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
-    mesh_prim.GetFaceVertexIndicesAttr().Set(face_vertex_indices)
-
-    if hasattr(mesh.visual, 'uv') and len(mesh.visual.uv) > 0:
-        pv = UsdGeom.PrimvarsAPI(mesh_prim)
-        uv_attr = pv.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying)
-        uv_attr.Set(mesh.visual.uv.tolist())
-        uv_attr.SetIndices(face_vertex_indices)
-
-        material_path = '/Root/Material'
-        material = UsdShade.Material.Define(stage, material_path)
-        pbr_shader = UsdShade.Shader.Define(stage, material_path + '/PBRShader')
-        pbr_shader.CreateIdAttr("UsdPreviewSurface")
-
-        if hasattr(mesh.visual, 'material') and hasattr(mesh.visual.material, 'image'):
-            tex_name = "texture.png"
-            tex_full_path = os.path.join(os.path.dirname(stage_path), tex_name)
-            mesh.visual.material.image.save(tex_full_path)
-
-            t_shader = UsdShade.Shader.Define(stage, material_path + '/DiffuseTexture')
-            t_shader.CreateIdAttr('UsdUVTexture')
-            t_shader.CreateInput('file', Sdf.ValueTypeNames.Asset).Set(tex_name)
-            t_shader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(pbr_shader.ConnectableAPI(), "st")
-            t_shader.CreateOutput('rgb', Sdf.ValueTypeNames.Float3)
-            pbr_shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(t_shader.ConnectableAPI(), "rgb")
-        
-        UsdShade.MaterialBindingAPI(mesh_prim).Bind(material)
-
-    stage.GetRootLayer().Save()
-    UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(stage_path), output_path)
-    return True
-
 def run_pipeline_return_bytes(pil_img, output_format='usdz'):
-    print(f"🎨 Stage 5: Starting TRELLIS Reconstruction (Output: {output_format.upper()})...")
+    print(f"🎨 Starting TRELLIS Reconstruction...")
     start_time = time.time()
     temp_dir = tempfile.mkdtemp()
     
     try:
-        print("   🧹 Removing Background...")
+        # Preprocess
         img = remove_background(pil_img.convert("RGBA"), rembg_session)
         img = resize_foreground(img, 0.85) 
         
-        print("   🧠 Running TRELLIS Inference...")
-        # Request both formats to satisfy to_glb requirements
-        outputs = pipeline.run(
-            img, 
-            seed=1, 
-            formats=["gaussian", "mesh"], 
-            preprocess_image=False
-        )
+        # Inference
+        outputs = pipeline.run(img, seed=1, formats=["gaussian", "mesh"], preprocess_image=False)
         
-        # Extract results
         trellis_gaussian = outputs['gaussian'][0]
         trellis_mesh = outputs['mesh'][0]
         
-        print("   🧱 Generating GLB from Gaussian + Mesh...")
-        # Create GLB object using both inputs
-        glb_object = postprocessing_utils.to_glb(
-            trellis_gaussian, 
-            trellis_mesh, 
-            simplify=0.95, 
-            texture_size=1024,
-            verbose=False
-        )
-        
-        # Save raw GLB (needed for both formats)
-        raw_glb_path = os.path.join(temp_dir, "trellis_raw.glb")
+        # Export GLB (This preserves the rich texture/color data from Trellis)
+        glb_object = postprocessing_utils.to_glb(trellis_gaussian, trellis_mesh, simplify=0.95, texture_size=1024, verbose=False)
+        raw_glb_path = os.path.join(temp_dir, "raw.glb")
         glb_object.export(raw_glb_path)
 
-        # Load into Trimesh for post-processing
+        # Load GLB into Trimesh just to get bounds and center it
         tm = trimesh.load(raw_glb_path, file_type='glb', force='mesh')
+        
+        # Center & Floor
+        tm.apply_translation([-tm.centroid[0], 0, -tm.centroid[2]])
+        min_y = tm.bounds[0][1]
+        tm.apply_translation([0, -min_y, 0])
+        print(f"   ⚓ Anchored mesh to floor")
 
-        # --- Simple Post-Processing (No Auto-Leveling) ---
-        # 1. Center on X/Z axis
-        tm.apply_translation([-tm.centroid[0], 0, -tm.centroid[2]]) 
-        # 2. Place on floor (Y=0)
-        tm.apply_translation([0, -tm.bounds[0][1], 0])              
-
-        # Calculate bounds for scaling logic later
+        # Calculate Bounds
         bmin, bmax = tm.bounds[0], tm.bounds[1]
-        bounds_m = (max(bmax[0]-bmin[0], 0.01), max(bmax[1]-bmin[1], 0.01), max(bmax[2]-bmin[2], 0.01))
+        bounds_m = (bmax[0]-bmin[0], bmax[1]-bmin[1], bmax[2]-bmin[2])
+
+        # Save corrected GLB
+        corrected_glb_path = os.path.join(temp_dir, "corrected.glb")
+        tm.export(corrected_glb_path)
 
         if output_format == 'glb':
-            print("   📦 Exporting GLB...")
-            out_path = os.path.join(temp_dir, "output.glb")
-            tm.export(out_path, file_type='glb')
+            with open(corrected_glb_path, 'rb') as f:
+                data = f.read()
             mimetype = "model/gltf-binary"
         else:
-            print("   🔄 Converting to USDZ...")
-            out_path = os.path.join(temp_dir, "output.usdz")
-            export_usdz_manually(tm, out_path)
+            # Use Aspose to convert Corrected GLB -> USDZ
+            usdz_path = os.path.join(temp_dir, "output.usdz")
+            print("   🔄 Converting with Aspose.3D...")
+            success = convert_glb_to_usdz_aspose(corrected_glb_path, usdz_path)
+            if not success: raise Exception("Aspose conversion failed")
+            with open(usdz_path, 'rb') as f:
+                data = f.read()
             mimetype = "model/vnd.usd+zip"
 
-        with open(out_path, 'rb') as f:
-            data = f.read()
-            
-        print(f"🎉 TRELLIS Pipeline Complete in {time.time() - start_time:.2f}s")
+        print(f"🎉 Done in {time.time() - start_time:.2f}s")
         return (data, mimetype, bounds_m)
 
-    except Exception:
-        print("❌ PIPELINE FATAL ERROR:")
-        traceback.print_exc()
-        raise
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 # ==========================================
-# 7. ROUTES
+# 6. ROUTES
 # ==========================================
-
 @app.route('/dream', methods=['POST'])
 def dream():
-    print("\n💤 DREAM REQUEST RECEIVED")
     query = request.form.get('query')
-    if not query: return jsonify({"error": "No query provided"}), 400
+    if not query: return jsonify({"error": "No query"}), 400
 
     links = fetch_search_results(query, 1)
-    if not links: return jsonify({"error": f"No results for {query}"}), 404
-    
+    if not links: return jsonify({"error": "Not found"}), 404
     product = fetch_product_details(links[0])
-    if not product or not product.get('image_url'): return jsonify({"error": "Product found but no image"}), 500
     
-    print(f"   📸 Found: {product['name']}")
-
     try:
-        resp = requests.get(product['image_url'], timeout=10)
-        img = Image.open(io.BytesIO(resp.content))
-    except Exception as e: return jsonify({"error": f"Image download failed: {e}"}), 500
-
-    try:
-        glb_bytes, mimetype, _ = run_pipeline_return_bytes(img, output_format='glb')
-        filename = f"{query.replace(' ', '_')}.glb"
-        return Response(glb_bytes, mimetype=mimetype, headers={
-            "Content-Disposition": f"attachment; filename={filename}"
+        img_resp = requests.get(product['image_url'], timeout=10)
+        img = Image.open(io.BytesIO(img_resp.content))
+        data, mime, _ = run_pipeline_return_bytes(img, output_format='usdz')
+        return Response(data, mimetype=mime, headers={
+            "Content-Disposition": f"attachment; filename={query}.usdz"
         })
     except Exception as e:
-        print(f"❌ Dream Pipeline Error: {e}")
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/roomscan', methods=['POST'])
-def roomscan_to_furniture():
-    print("\n🚀 NEW ROOMSCAN REQUEST RECEIVED")
+def roomscan():
     if 'file' not in request.files: return jsonify({"error": "No file"}), 400
-    room_type = request.form.get('room_type', 'living room')
-
-    room_dims = get_room_dimensions_from_buffer(request.files['file'])
-    if not room_dims: return jsonify({"error": "Invalid room scan file"}), 400
-
-    suggestions = ask_gemini_for_furniture(room_dims, room_type, num_items=3)
     
-    built = []
-    for sugg in suggestions[:3]:
-        query = sugg.get("furniture_query", "IKEA chair")
+    # 1. Get Room Info
+    room_dims = get_room_dimensions_from_buffer(request.files['file'])
+    if not room_dims: return jsonify({"error": "Bad Scan"}), 400
+    room_type = request.form.get('room_type', 'room')
+
+    # 2. Get AI Suggestions (Dynamic Count & Style)
+    suggestions = ask_gemini_for_furniture(room_dims, room_type)
+    
+    furniture_list = []
+    
+    # 3. Generate Items (Max 5)
+    for i, item in enumerate(suggestions[:5]):
+        query = item.get("furniture_query", "Chair")
         links = fetch_search_results(query, 1)
         if not links: continue
-        product = fetch_product_details(links[0])
-        if not product or not product.get('image_url'): continue
-        try:
-            img_resp = requests.get(product['image_url'], timeout=10)
-            img = Image.open(io.BytesIO(img_resp.content))
-        except Exception: continue
         
+        prod = fetch_product_details(links[0])
         try:
-            # Main app uses USDZ
-            usdz_bytes, mimetype, bounds_m = run_pipeline_return_bytes(img, output_format='usdz')
-            built.append((product, usdz_bytes, mimetype, bounds_m))
+            img = Image.open(io.BytesIO(requests.get(prod['image_url']).content))
+            data, mime, bounds_m = run_pipeline_return_bytes(img, output_format='usdz')
+            
+            mid = str(uuid.uuid4())
+            model_store[mid] = (data, mime)
+            
+            # Smart Scaling
+            target_w = prod['width_cm'] if prod['width_cm'] != 80 else item.get("target_width_cm", 80)
+            target_h = prod['height_cm'] if prod['height_cm'] != 80 else item.get("target_height_cm", 80)
+            target_d = prod['depth_cm'] if prod['depth_cm'] != 80 else item.get("target_depth_cm", 80)
+            
+            bw, bh, bd = bounds_m
+            sx = (target_w / 100.0) / bw if bw > 0.01 else 1.0
+            sy = (target_h / 100.0) / bh if bh > 0.01 else 1.0
+            sz = (target_d / 100.0) / bd if bd > 0.01 else 1.0
+            
+            px = (i - (len(suggestions)-1)/2) * 1.2 
+            
+            furniture_list.append({
+                "furniture_id": str(uuid.uuid4()),
+                "usdz_url": f"/roomscan/model/{mid}",
+                "position": {"x": px, "y": 0, "z": 0}, 
+                "scale": {"x": sx, "y": sy, "z": sz},
+                "page_link": prod['link'],
+                "price": str(prod['price']),
+                "description": query
+            })
+            
         except Exception as e:
-            print(f"⚠️ Pipeline failed for {query}: {e}")
+            print(f"Failed item {query}: {e}")
             continue
 
-    if not built: return jsonify({"error": "Could not generate furniture"}), 500
-
-    furniture_payloads = []
-    for idx, (product, usdz_bytes, mimetype, bounds_m) in enumerate(built):
-        model_id = str(uuid.uuid4())
-        model_store[model_id] = (usdz_bytes, mimetype)
-        
-        # Simple floor layout logic
-        rw, rd = room_dims["w"]/100.0, room_dims["d"]/100.0
-        x_span, z_span = max(rw-0.8, 1.0), max(rd-0.8, 1.0)
-        positions = [(0,0,0)]
-        if len(built)==2: positions = [(-x_span/4,0,z_span/4), (x_span/4,0,z_span/4)]
-        if len(built)==3: positions = [(0,0,z_span/4), (-x_span/3,0,-z_span/4), (x_span/3,0,-z_span/4)]
-        
-        px, py, pz = positions[idx] if idx < len(positions) else (0,0,0)
-        bw, bh, bd = bounds_m
-        sx = (product["width_cm"]/100.0)/bw if bw>0 else 1.0
-        sy = (product["height_cm"]/100.0)/bh if bh>0 else 1.0
-        sz = (product["depth_cm"]/100.0)/bd if bd>0 else 1.0
-
-        furniture_payloads.append({
-            "furniture_id": str(uuid.uuid4()),
-            "usdz_url": f"/roomscan/model/{model_id}",
-            "position": {"x": px, "y": py, "z": pz},
-            "scale": {"x": sx, "y": sy, "z": sz},
-            "page_link": product["link"],
-            "price": str(int(product["price"])),
-            "image_link": product["image_url"],
-        })
-
-    return jsonify({
+    response_payload = {
         "scan_id": str(uuid.uuid4()),
-        "plans": [{"plan_id": str(uuid.uuid4()), "furniture": furniture_payloads, "total_items": len(furniture_payloads)}],
-        "total_plans": 1,
-    })
+        "plans": [{"plan_id": str(uuid.uuid4()), "furniture": furniture_list, "total_items": len(furniture_list)}],
+        "total_plans": 1
+    }
+    
+    # --- LOG OUTPUT FOR DEBUGGING ---
+    print("\n📦 FINAL JSON RESPONSE:")
+    print(json.dumps(response_payload, indent=2))
+    print("-----------------------\n")
 
-@app.route('/roomscan/model/<model_id>', methods=['GET'])
-def get_model(model_id):
-    if model_id not in model_store: return jsonify({"error": "Model not found"}), 404
-    data, mimetype = model_store.pop(model_id)
-    return Response(data, mimetype=mimetype, headers={"Content-Disposition": f"attachment; filename=furniture.usdz"})
+    return jsonify(response_payload)
+
+@app.route('/roomscan/model/<mid>', methods=['GET'])
+def get_model(mid):
+    if mid not in model_store: return jsonify({"error": "404"}), 404
+    data, mime = model_store.pop(mid)
+    return Response(data, mimetype=mime, headers={"Content-Disposition": "attachment; filename=model.usdz"})
 
 @app.route('/health', methods=['GET'])
 def health():
